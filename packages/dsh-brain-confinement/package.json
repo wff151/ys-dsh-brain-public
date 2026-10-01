@@ -1,0 +1,35 @@
+{
+  "name": "dsh-brain-confinement",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Add-only dsh 0.1.6 Cordis function-plugin that confines model-facing fs tools away from the DSH_HOME storages/ and sessions/ memory roots. Mounts independently of the dsh-brain bundle for isolated A/B testing; fs path is airtight via realpath + identity, shell hardening is a separate later stage.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --import tsx/esm tests/run-all.mjs"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml"
+  ],
+  "exports": {
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "link:../../../dsh-monorepo/vendor/cordis",
+    "@deepseek-ai/dsh-tools": "link:../../../dsh-monorepo/packages/core/tools",
+    "@deepseek-ai/schemastery": "link:../../../dsh-monorepo/vendor/schemastery"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}

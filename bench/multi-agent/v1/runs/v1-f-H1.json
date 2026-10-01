@@ -1,0 +1,109 @@
+{
+  "trace_id": "v1-f-H1",
+  "prompt_version": "f",
+  "task": "H1",
+  "category": "真信息不全",
+  "judge": "hypothesis",
+  "stages": [
+    {
+      "stage": 1,
+      "input": "将 3 个核心服务迁移到微服务架构。依赖关系文档缺失。团队有架构师陈工，但他近期在支援另一个项目。改造方案需基于服务间依赖拆分。请给出方案与理由。",
+      "output": "## 定位\n\n1. **主要矛盾 = S1/S2/S3 三个核心服务的同步调用链与共享数据库表依赖未量化，导致无法确定可独立部署的拆分边界。**  \n2. **依据 = 依赖关系文档缺失；改造要求基于服务间依赖拆分；陈工近期在支援另一个项目，无法一次性完成完整架构评审；若直接按模块名拆分，可能把 S1 与 S2 的订单/支付事务拆散。**  \n3. **次重要矛盾 = S1/S2/S3 的数据库表归属与事务边界未明确，影响数据一致性方案选择。**  \n4. **转化条件 = 信号：依赖矩阵中 S1-S2/S1-S3/S2-S3 的同步调用次数、共享表数量、跨服务事务数量；阈值：同步调用 > 3 次/分钟 或共享可写表 > 1 张 或跨服务事务 > 1 个；动作：将同步调用改为事件总线 + 最终一致性，冻结共享表写入，并建立数据归属清单。**  \n5. **次重要矛盾 = 服务级 CI/CD 与独立发布能力不足，影响迁移节奏。**  \n6. **转化条件 = 信号：S1/S2/S3 独立构建失败次数、发布时长、灰度回滚次数；阈值：构建成功率 < 95% 或发布时长 > 30 分钟 或回滚 > 1 次/周；动作：拆分构建流水线，增加契约测试、灰度发布与自动回滚。**  \n7. **次要矛盾 = 文档与命名规范缺失，影响后续维护。**  \n8. **不处理原因 = 当前验收目标是完成 3 个核心服务迁移，文档缺失不阻塞依赖矩阵生成，可在 Phase 0 用代码、运行时追踪、数据库查询日志补齐。**\n\n---\n\n## 方案\n\n### 1. 先建立依赖证据，不先画最终架构\n\n由于依赖关系文档缺失，不能直接按“订单、支付、库存”等经验边界拆分。先产出三份可验证清单：\n\n- **调用依赖矩阵**：S1/S2/S3 之间的同步调用、异步消息、RPC、HTTP 调用。\n- **数据依赖清单**：共享数据库表、共享缓存键、共享配置项、跨服务事务。\n- **发布依赖清单**：哪些服务必须一起发布、哪些接口契约会阻塞独立部署。\n\n证据来源：\n\n- 代码静态分析：调用关系、包依赖、共享库依赖。\n- 运行时追踪：OpenTelemetry、Jaeger、链路日志。\n- 数据库审计：查询日志、表访问记录、事务日志。\n- 消息队列：Topic、Consumer、Producer 关系。\n- API 网关/负载均衡日志：入口流量与下游调用。\n\n产出物：\n\n- `dependency_matrix.csv`\n- `shared_db_tables.csv`\n- `transaction_boundary.csv`\n- `service_contract.csv`\n\n### 2. 拆分原则：按依赖强度拆，不按目录名拆\n\n对 S1/S2/S3 使用以下判断：\n\n| 依赖类型 | 处理策略 |\n|---|---|\n| 强同步依赖，且业务事务必须一致 | 先保留同进程或同部署单元，后续再拆 |\n| 强同步依赖，但可接受最终一致 | 改为事件总线 + 幂等消费 |\n| 共享数据库表 | 明确表归属，禁止跨服务直接写表 |\n| 共享只读数据 | 改为只读副本、缓存或数据服务 |\n| 共享配置 | 拆成服务级配置，避免发布耦合 |\n| 共享库代码 | 提取公共契约包，禁止共享业务逻辑包 |\n\n### 3. 迁移路径：三阶段 strangler 拆分\n\n#### Phase 0：依赖盘点，1 周\n\n目标：\n\n- 生成 S1/S2/S3 依赖矩阵。\n- 标记高风险共享表。\n- 标记跨服务事务。\n- 确定第一个拆分候选服务。\n\n选择第一个拆分服务的规则：\n\n- 出向调用最少；\n- 共享表最少；\n- 业务边界最清晰；\n- 对整体链路影响最小。\n\n如果 S1 是订单核心，S2 是支付核心，S3 是库存/履约核心，通常优先拆 S3 或 S1 中边界最清晰的服务，而不是先拆调用链最复杂的 S2。\n\n#### Phase 1：拆出第一个服务，2 周\n\n目标：\n\n- 将候选服务从原部署单元中拆出。\n- 引入 API Gateway 或 BFF 作为统一入口。\n- 保留原有数据库，但冻结跨服务写表。\n- 增加契约测试。\n\n动作：\n\n1. 为候选服务创建独立仓库或独立模块。\n2. 将外部调用收敛到 Facade。\n3. 将内部调用改为明确接口契约。\n4. 对共享表建立只读访问或数据归属规则。\n5. 增加独立构建、独立测试、独立部署能力。\n\n验收：\n\n- 候选服务可独立构建。\n- 候选服务可独立灰度发布。\n- 原有主链路 P99 延迟增加不超过 20%。\n- 错误率不超过 0.5%。\n\n#### Phase 2：拆出第二个服务，3 周\n\n目标：\n\n- 将第二个核心服务拆出。\n- 将第一个服务与第二个服务之间的强同步调用逐步替换为事件。\n- 明确数据归属。\n\n动作：\n\n1. 将可异步化的调用改为事件。\n2. 使用 Outbox 模式保证本地事务与事件发布一致。\n3. 为事件定义 Schema Registry 或契约测试。\n4. 将共享表拆分为服务私有表。\n5. 对跨服务事务改为最终一致性。\n\n验收：\n\n- 两个服务可独立部署。\n- 共享可写表数量降为 0。\n- 事件消费失败可重试且幂等。\n- 回滚时间小于 5 分钟。\n\n#### Phase 3：拆出第三个服务并固化，2 周\n\n目标：\n\n- 完成 S1/S2/S3 三个核心服务的独立部署。\n- 移除跨服务共享数据库写入。\n- 建立服务级可观测性。\n\n动作：\n\n1. 第三个服务独立部署。\n2. 所有跨服务调用走 API Gateway 或事件总线。\n3. 所有数据库表归属到单一服务。\n4. 建立 SLO：可用性、延迟、错误率、回滚时间。\n5. 建立依赖矩阵自动检查，防止回归。\n\n验收：\n\n- S1/S2/S3 均可独立发布。\n- 无共享可写数据库表。\n- 无跨服务直接事务。\n- 依赖矩阵自动更新。\n- 主链路 P99 延迟增加不超过 20%。\n- 错误率不超过 0.5%。\n\n---\n\n## 理由\n\n### 1. 依赖文档缺失时，必须先补证据\n\n当前最大风险不是“拆不拆”，而是“拆错”。如果缺少依赖关系文档，直接按业务名称拆分，可能导致：\n\n- S1 与 S2 之间的事务被拆散；\n- 共享表被两个服务同时写入；\n- 发布时仍需要一起重启；\n- 微服务化后故障域反而扩大。\n\n因此先做依赖矩阵，再定拆分边界。\n\n### 2. 陈工近期不在，不能依赖单人架构决策\n\n陈工近期在支援另一个项目，不能作为唯一架构决策点。方案应使用：\n\n- 小范围架构评审；\n- 架构决策记录 ADR；\n- 依赖矩阵作为客观依据；\n- 每个 Phase 设置验收门槛。\n\n这样即使陈工不在，团队也能按证据推进，而不是等待单一专家拍板。\n\n### 3. 基于服务间依赖拆分，才能降低耦合\n\n微服务架构的核心不是把代码拆成更多进程，而是让每个服务拥有：\n\n- 独立部署能力；\n- 独立数据边界；\n- 独立故障域；\n- 明确接口契约。\n\n如果 S1/S2/S3 之间仍共享数据库、共享事务、共享发布，那么只是物理拆分，不是架构拆分。\n\n### 4. 先拆边界最清晰的服务，降低风险\n\n不建议一次性拆三个服务。建议按依赖强度逐步拆：\n\n- 先拆边界最清晰、共享依赖最少服务；\n- 再拆次强依赖服务；\n- 最后处理强同步事务和共享数据。\n\n这样可以控制风险，避免主链路同时出现多个变更点。\n\n---\n\n## 建议的决策规则\n\n| 场景 | 决策 |\n|---|---|\n| S1 与 S2 同步调用少于 3 次/分钟，且无共享表 | 可拆为独立服务 |\n| S1 与 S2 同步调用大于 3 次/分钟，但有共享表 | 先冻结共享表，再拆服务 |\n| S1 与 S2 存在跨服务事务 | 不立即拆，先改 Outbox + 最终一致性 |\n| 共享只读表 | 可拆服务，但需建立只读数据访问边界 |\n| 共享可写表 | 必须明确表归属，否则不进入独立部署 |\n| 构建仍依赖同一仓库发布 | 不视为独立服务，需拆 CI/CD |\n\n---\n\n## 风险与应对\n\n| 风险 | 影响 | 应对 |\n|---|---|---|\n| 依赖文档缺失 | 拆分边界错误 | Phase 0 用代码、运行时、数据库日志生成依赖矩阵 |\n| 陈工不在 | 架构决策延迟 | 用 ADR + 依赖矩阵 + 小评审替代单人决策 |\n| 共享表未拆分 | 数据不一致 | 冻结共享表写入，建立数据归属清单 |\n| 同步调用过多 | 故障传播 | 将非强一致调用改为事件 |\n| CI/CD 未拆分 | 无法独立发布 | 先拆构建流水线，再拆部署单元 |\n| 事件消费失败 | 数据丢失或重复 | 使用 Outbox、幂等消费、死信队列 |\n\n---\n\n## 最终建议\n\n采用“证据先行、分阶段拆分、数据归属优先”的方案：\n\n1. 先产出 S1/S2/S3 依赖矩阵。\n2. 先拆边界最清晰、共享依赖最少服务。\n3. 同步调用逐步改为事件，但强一致事务先保留或改造 Outbox。\n4. 共享表必须明确归属，禁止跨服务直接写表。\n5. 每个 Phase 以独立构建、独立灰度、独立回滚为验收标准。\n6. 陈工不在期间，用 ADR、依赖矩阵和 Phase 验收门槛推进，避免单点决策。\n\n{\"memory_writes\":[{\"tool\":\"note\",\"params\":{\"goal\":\"Complete migration of S1/S2/S3 core services to microservices using dependency-based splitting despite missing dependency documentation.\",\"issues\":[\"S1/S2/S3 sync call dependency matrix is missing\",\"S1/S2/S3 shared writable database tables are unowned\",\"S1/S2/S3 cross-service transaction boundaries are unclear\",\"Service-level CI/CD and independent deployment capability is insufficient\",\"Architecture review is delayed because Chen is supporting another project\"],\"result\":\"Adopt evidence-first strangler migration: build dependency matrix, shared table list, transaction boundary list, then split the clearest service first, replace sync calls with events where acceptable, enforce data ownership, and validate independent deploy, P99 latency, error rate, and rollback time.\",\"tags\":[\"microservices\",\"dependency-splitting\",\"S1\",\"S2\",\"S3\",\"data-ownership\",\"CI/CD\",\"architecture-review\"]}}]}",
+      "memory_writes": [
+        {
+          "tool": "note",
+          "params": {
+            "goal": "Complete migration of S1/S2/S3 core services to microservices using dependency-based splitting despite missing dependency documentation.",
+            "issues": [
+              "S1/S2/S3 sync call dependency matrix is missing",
+              "S1/S2/S3 shared writable database tables are unowned",
+              "S1/S2/S3 cross-service transaction boundaries are unclear",
+              "Service-level CI/CD and independent deployment capability is insufficient",
+              "Architecture review is delayed because Chen is supporting another project"
+            ],
+            "result": "Adopt evidence-first strangler migration: build dependency matrix, shared table list, transaction boundary list, then split the clearest service first, replace sync calls with events where acceptable, enforce data ownership, and validate independent deploy, P99 latency, error rate, and rollback time.",
+            "tags": [
+              "microservices",
+              "dependency-splitting",
+              "S1",
+              "S2",
+              "S3",
+              "data-ownership",
+              "CI/CD",
+              "architecture-review"
+            ]
+          }
+        }
+      ],
+      "formatOk": true
+    }
+  ],
+  "injected_change": null,
+  "blackboard_writes": [
+    {
+      "tool": "note",
+      "params": {
+        "goal": "Complete migration of S1/S2/S3 core services to microservices using dependency-based splitting despite missing dependency documentation.",
+        "issues": [
+          "S1/S2/S3 sync call dependency matrix is missing",
+          "S1/S2/S3 shared writable database tables are unowned",
+          "S1/S2/S3 cross-service transaction boundaries are unclear",
+          "Service-level CI/CD and independent deployment capability is insufficient",
+          "Architecture review is delayed because Chen is supporting another project"
+        ],
+        "result": "Adopt evidence-first strangler migration: build dependency matrix, shared table list, transaction boundary list, then split the clearest service first, replace sync calls with events where acceptable, enforce data ownership, and validate independent deploy, P99 latency, error rate, and rollback time.",
+        "tags": [
+          "microservices",
+          "dependency-splitting",
+          "S1",
+          "S2",
+          "S3",
+          "data-ownership",
+          "CI/CD",
+          "architecture-review"
+        ]
+      }
+    }
+  ],
+  "folded": {
+    "goal": "Complete migration of S1/S2/S3 core services to microservices using dependency-based splitting despite missing dependency documentation.",
+    "issues": [
+      "S1/S2/S3 sync call dependency matrix is missing",
+      "S1/S2/S3 shared writable database tables are unowned",
+      "S1/S2/S3 cross-service transaction boundaries are unclear",
+      "Service-level CI/CD and independent deployment capability is insufficient",
+      "Architecture review is delayed because Chen is supporting another project"
+    ],
+    "result": "Adopt evidence-first strangler migration: build dependency matrix, shared table list, transaction boundary list, then split the clearest service first, replace sync calls with events where acceptable, enforce data ownership, and validate independent deploy, P99 latency, error rate, and rollback time.",
+    "tags": [
+      "microservices",
+      "dependency-splitting",
+      "S1",
+      "S2",
+      "S3",
+      "data-ownership",
+      "CI/CD",
+      "architecture-review"
+    ]
+  },
+  "resume_readback": {
+    "found": true,
+    "unresolved": [
+      "S1/S2/S3 sync call dependency matrix is missing",
+      "S1/S2/S3 shared writable database tables are unowned",
+      "S1/S2/S3 cross-service transaction boundaries are unclear",
+      "Service-level CI/CD and independent deployment capability is insufficient",
+      "Architecture review is delayed because Chen is supporting another project"
+    ],
+    "brief": "=== 可接续的历史任务（断点续跑，共 1 个）===\n\n[1] 新建对话（日常，第 1 次交换，最近活动 2026-09-30 17:49）\n  会话：v1-f-H1-s1\n  目标：Complete migration of S1/S2/S3 core services to microservices using dependency-based splitting despite missing dependency documentation.\n  已解决：无\n  待解决：S1/S2/S3 sync call dependency matrix is missing、S1/S2/S3 shared writable database tables are unowned、S1/S2/S3 cross-service transaction boundaries are unclear、Service-level CI/CD and independent deployment capability is insufficient、Architecture review is delayed because Chen is supporting another project\n\n以上仅为历史记录，不代表现在要自动执行。请先向用户确认要接续哪一个任务；确认后可用 brain 工具 action=search 回忆相关细节，再从“待解决”处继续。不要自动重放之前的工具调用或任何有副作用的操作。"
+  },
+  "public_readback": {
+    "found": false,
+    "unresolved": []
+  },
+  "verdict": {
+    "resistance": "Y",
+    "blackboard_ok": null,
+    "notes": "自发假设（依赖未量化）+验证动作（依赖矩阵/契约测试/灰度回滚）"
+  }
+}

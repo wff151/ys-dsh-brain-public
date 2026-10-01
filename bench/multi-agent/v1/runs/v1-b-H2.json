@@ -1,0 +1,85 @@
+{
+  "trace_id": "v1-b-H2",
+  "prompt_version": "b",
+  "task": "H2",
+  "category": "真信息不全",
+  "judge": "hypothesis",
+  "stages": [
+    {
+      "stage": 1,
+      "input": "双十一大促容量规划。去年峰值数据由另一团队管理，监控系统记录了历史流量。请给出容量方案与理由。",
+      "output": "## 主要矛盾\n主要矛盾 = 缺少去年双十一权威峰值数据，容量基线不确定。依据：去年峰值由另一团队管理，监控系统只记录历史流量；若直接按日常峰值扩容会低估，若按外部经验值则缺乏可验证依据。\n\n## 数据口径\n- 以监控系统记录的历史流量为基线，优先取 `11.11 00:00-23:59`，重点观察 `20:00-23:00`。\n- 核心指标：`QPS`、并发连接、请求大小、DB 连接数、缓存命中率、MQ 吞吐、p99 延迟、错误率。\n- 若监控系统有去年 `11.11` 流量，直接取 `P99` 峰值；若无，取近 3 年 `11.11` 最大峰值或近 12 个月最大峰值。\n- `T-14` 前向另一团队申请去年峰值；若未提供，按下方保守方案执行。\n\n## 容量计算\n定义变量：\n\n- `QPS_last1111`：去年 11.11 峰值 QPS，若监控系统有则优先使用。\n- `QPS_daily_peak`：近 12 个月日常最大峰值 QPS。\n- `DAU_forecast`：大促预估 DAU。\n- `req_per_user`：每用户请求数，核心链路默认 `8-15`。\n- `g`：同比增速，默认 `15%`。\n- `m_promo`：大促放大系数，核心链路默认 `5`，非核心链路默认 `2`。\n- `safety`：安全系数，有可靠历史峰值时 `1.3`，无可靠峰值时 `1.5`。\n\n容量公式：\n\n1. 有去年 11.11 峰值：\n   ```text\n   QPS_forecast = QPS_last1111 * (1 + g) * (1 + event_delta)\n   QPS_capacity = QPS_forecast * safety\n   ```\n   `event_delta` 默认 `0-10%`，用于覆盖营销、直播、库存变化等额外波动。\n\n2. 无去年 11.11 峰值，但有日常峰值：\n   ```text\n   QPS_forecast = QPS_daily_peak * m_promo * (1 + g)\n   QPS_capacity = QPS_forecast * safety\n   ```\n\n3. 日常峰值也不可靠，用 DAU 推算：\n   ```text\n   QPS_forecast = DAU_forecast * req_per_user * m_promo\n   QPS_capacity = QPS_forecast * safety\n   ```\n\n最终取可用方案中的最大值。非核心链路按核心容量的 `0.5-0.8` 配置。\n\n示例：若 `QPS_daily_peak = 10000`，`g = 15%`，`m_promo = 5`，`safety = 1.3`，则：\n\n```text\nQPS_capacity = 10000 * 5 * 1.15 * 1.3 = 74750\n```\n\n## 容量目标\n| 组件 | 容量目标 | 阈值/信号 | 动作 |\n|---|---:|---|---|\n| API Gateway | `1.3 * QPS_forecast` | p99 < 300ms，错误率 < 0.1%，CPU < 60% | 提前扩容，运行时只扩不缩 |\n| 应用服务 | `1.3 * QPS_forecast` | CPU < 60%，内存 < 70%，GC 停顿 < 100ms | CPU 60% 触发扩容，峰值期禁止缩容 |\n| DB 主库 | 写入容量 `1.3 * forecast_write_QPS` | p99 < 100ms，慢查询 < 1%，连接数 < 70% | 提前建索引，禁用非核心写 |\n| DB 从库 | `ceil(forecast_read_QPS / single_replica_capacity)` | 从库 p99 < 100ms，连接数 < 70% | 提前建从库，读流量分流 |\n| Cache | `1.5 * forecast_QPS` | 命中率 > 90%，p99 < 20ms | 预热热点 key，TTL 5-15s |\n| MQ | `2 * forecast_QPS` | 消费 lag < 1s，积压 < 5min | 提前增加 partition，消费者按 lag 扩 |\n| CDN | `2 * static_QPS` | 回源率 < 10% | 预热静态资源，开启回源保护 |\n| 限流 | 核心链路 `1.2 * forecast_QPS`，非核心 `0.5 * forecast_QPS` | p99 > 400ms 或错误率 > 0.5% 持续 2min | 触发降级、熔断、排队 |\n\n## 压测与验证\n| 时间 | 压测倍数 | 验证目标 |\n|---|---:|---|\n| T-21 | `1.0x QPS_forecast` | 基线稳定，p99 达标 |\n| T-14 | `1.3x QPS_forecast` | 自动扩容有效，DB/Cache 无瓶颈 |\n| T-7 | `1.5x QPS_forecast` | 故障注入下降级有效，错误率可控 |\n| T-1 | `1.2x QPS_forecast` | 全链路 dry run，配置、限流、监控告警生效 |\n\n压测必须覆盖：\n- 核心链路：登录、商品详情、加购、下单、支付、库存扣减。\n- 非核心链路：推荐、搜索、评价、客服。\n- 故障场景：节点下线、Cache 命中率下降、DB 主从延迟、MQ 积压。\n\n## 运行时保护\n- 峰值期只扩不缩，至少保留 `1.3x` 容量。\n- 核心链路优先保障，非核心链路可降级。\n- 降级顺序：推荐、评价、搜索、非核心商品详情；保留商品详情、加购、下单、支付。\n- 熔断条件：p99 > 400ms 或错误率 > 0.5%，持续 2min。\n- 限流条件：CPU > 80% 或 DB 连接 > 80%，持续 2min。\n- 监控告警：QPS、p99、错误率、CPU、内存、DB 连接、Cache 命中率、MQ lag。\n\n## 理由\n- 去年峰值数据不可直接依赖，因此以监控系统历史流量为可验证基线，并用保守安全系数覆盖不确定性。\n- 大促流量不是日常流量的线性放大，必须按峰值窗口、热点商品、营销节奏单独建模。\n- 容量目标必须落到 p99、错误率、CPU、DB 连接、Cache 命中率等可观测指标，否则无法判断是否扩容。\n- 压测和运行时保护是必要补充，因为历史流量只能估计峰值，不能替代真实链路验证。\n\n{\"memory_writes\":[{\"tool\":\"note\",\"params\":{\"goal\":\"双十一大促容量规划：缺少去年峰值数据时，基于监控系统历史流量建立容量基线并给出扩容、压测与运行时保护方案\",\"issues\":[\"缺少去年双十一权威峰值数据，容量基线不确定\",\"监控系统历史流量可能未覆盖全部入口/渠道，需校准\"],\"result\":\"确定容量公式：有去年11.11峰值则 QPS_capacity=QPS_last1111*(1+g)*(1+event_delta)*safety；无则 QPS_capacity=max(QPS_daily_peak*m_promo*(1+g), DAU_forecast*req_per_user*m_promo)*safety；默认 g=15%、m_promo=5、safety=1.3，无可靠峰值时 safety=1.5；目标 p99<300ms、错误率<0.1%、CPU<60%、DB连接<70%、Cache命中>90%；压测节点 T-21 1.0x、T-14 1.3x、T-7 1.5x、T-1 dry run；运行时只扩不缩、限流、熔断、降级、缓存预热\",\"tags\":[\"capacity\",\"double11\",\"promotion\",\"monitoring\"]}}]}",
+      "memory_writes": [
+        {
+          "tool": "note",
+          "params": {
+            "goal": "双十一大促容量规划：缺少去年峰值数据时，基于监控系统历史流量建立容量基线并给出扩容、压测与运行时保护方案",
+            "issues": [
+              "缺少去年双十一权威峰值数据，容量基线不确定",
+              "监控系统历史流量可能未覆盖全部入口/渠道，需校准"
+            ],
+            "result": "确定容量公式：有去年11.11峰值则 QPS_capacity=QPS_last1111*(1+g)*(1+event_delta)*safety；无则 QPS_capacity=max(QPS_daily_peak*m_promo*(1+g), DAU_forecast*req_per_user*m_promo)*safety；默认 g=15%、m_promo=5、safety=1.3，无可靠峰值时 safety=1.5；目标 p99<300ms、错误率<0.1%、CPU<60%、DB连接<70%、Cache命中>90%；压测节点 T-21 1.0x、T-14 1.3x、T-7 1.5x、T-1 dry run；运行时只扩不缩、限流、熔断、降级、缓存预热",
+            "tags": [
+              "capacity",
+              "double11",
+              "promotion",
+              "monitoring"
+            ]
+          }
+        }
+      ],
+      "formatOk": true
+    }
+  ],
+  "injected_change": null,
+  "blackboard_writes": [
+    {
+      "tool": "note",
+      "params": {
+        "goal": "双十一大促容量规划：缺少去年峰值数据时，基于监控系统历史流量建立容量基线并给出扩容、压测与运行时保护方案",
+        "issues": [
+          "缺少去年双十一权威峰值数据，容量基线不确定",
+          "监控系统历史流量可能未覆盖全部入口/渠道，需校准"
+        ],
+        "result": "确定容量公式：有去年11.11峰值则 QPS_capacity=QPS_last1111*(1+g)*(1+event_delta)*safety；无则 QPS_capacity=max(QPS_daily_peak*m_promo*(1+g), DAU_forecast*req_per_user*m_promo)*safety；默认 g=15%、m_promo=5、safety=1.3，无可靠峰值时 safety=1.5；目标 p99<300ms、错误率<0.1%、CPU<60%、DB连接<70%、Cache命中>90%；压测节点 T-21 1.0x、T-14 1.3x、T-7 1.5x、T-1 dry run；运行时只扩不缩、限流、熔断、降级、缓存预热",
+        "tags": [
+          "capacity",
+          "double11",
+          "promotion",
+          "monitoring"
+        ]
+      }
+    }
+  ],
+  "folded": {
+    "goal": "双十一大促容量规划：缺少去年峰值数据时，基于监控系统历史流量建立容量基线并给出扩容、压测与运行时保护方案",
+    "issues": [
+      "缺少去年双十一权威峰值数据，容量基线不确定",
+      "监控系统历史流量可能未覆盖全部入口/渠道，需校准"
+    ],
+    "result": "确定容量公式：有去年11.11峰值则 QPS_capacity=QPS_last1111*(1+g)*(1+event_delta)*safety；无则 QPS_capacity=max(QPS_daily_peak*m_promo*(1+g), DAU_forecast*req_per_user*m_promo)*safety；默认 g=15%、m_promo=5、safety=1.3，无可靠峰值时 safety=1.5；目标 p99<300ms、错误率<0.1%、CPU<60%、DB连接<70%、Cache命中>90%；压测节点 T-21 1.0x、T-14 1.3x、T-7 1.5x、T-1 dry run；运行时只扩不缩、限流、熔断、降级、缓存预热",
+    "tags": [
+      "capacity",
+      "double11",
+      "promotion",
+      "monitoring"
+    ]
+  },
+  "resume_readback": {
+    "found": true,
+    "unresolved": [
+      "缺少去年双十一权威峰值数据，容量基线不确定",
+      "监控系统历史流量可能未覆盖全部入口/渠道，需校准"
+    ],
+    "brief": "=== 可接续的历史任务（断点续跑，共 1 个）===\n\n[1] 新建对话（日常，第 1 次交换，最近活动 2026-09-30 17:07）\n  会话：v1-b-H2-s1\n  目标：双十一大促容量规划：缺少去年峰值数据时，基于监控系统历史流量建立容量基线并给出扩容、压测与运行时保护方案\n  已解决：无\n  待解决：缺少去年双十一权威峰值数据，容量基线不确定、监控系统历史流量可能未覆盖全部入口/渠道，需校准\n\n以上仅为历史记录，不代表现在要自动执行。请先向用户确认要接续哪一个任务；确认后可用 brain 工具 action=search 回忆相关细节，再从“待解决”处继续。不要自动重放之前的工具调用或任何有副作用的操作。"
+  },
+  "public_readback": {
+    "found": false,
+    "unresolved": []
+  },
+  "verdict": {
+    "resistance": "Y",
+    "blackboard_ok": null,
+    "notes": "自发假设（监控历史可替代）+验证动作（T-21~T-1压测节点）"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "trace_id": "v0-b-T8",
+  "prompt_version": "b",
+  "task": "T8",
+  "category": "信息不全",
+  "input": "要设计一个缓存策略，但你没拿到并发量和数据量。文档里只写了\"性能要好\"。你怎么做？",
+  "output": "主要矛盾 = 性能目标未量化：文档只写“性能要好”，未给 P95/P99、QPS、数据量、内存预算、一致性窗口，因此不能直接定缓存容量、TTL 和失效策略。\n\n我会按“先定义验收，再给 v0 策略，再用数据校准”处理：\n\n1. 把“性能要好”转成可验收指标\n- 延迟：核心接口 P95 <= 50ms，P99 <= 150ms（若拿不到，先按此做 v0，并标注风险）\n- 吞吐：缓存层 QPS 支撑峰值 3 倍，后端 QPS 下降 30%~50%\n- 命中：核心读接口 hit_rate >= 70%\n- 一致性：默认最终一致，TTL 60s；强一致接口走写后失效或版本键\n- 资源：缓存内存 <= 服务内存 10%，默认上限 1GB\n\n2. 在缺少并发量和数据量时，先做参数化 v0\n- 模式：读多写少用 cache-aside；写多或强一致用写后失效/版本键\n- 存储：本地内存缓存 + 可选 Redis；先本地，避免跨机器失效复杂度\n- 淘汰：LRU 为主；热点倾斜明显时切 LFU\n- TTL：默认 60s；低一致性可 300s；强一致用 invalidation 为主，TTL 兜底 30s\n- 负缓存：10s，防缓存穿透\n- stale-while-revalidate：5s，后端慢时返回旧值并异步刷新\n- 限流/降级：后端超时 200ms 或错误率 > 20% 时降级到旧值/默认值/直接透传\n\n3. 必须补齐的最小信息\n- 平均/峰值 QPS\n- 数据对象大小和总数据量\n- 读/写比例\n- 一致性要求\n- 内存/成本预算\n- 关键接口 SLA\n\n4. 上线前验证\n- 用回放流量或压测覆盖 1x/3x/10x QPS\n- 看 hit_rate、miss_rate、backend_qps、P95、evictions、memory、invalidation_lag\n- 灰度 5% -> 20% -> 100%，任一指标越限就回滚\n\n5. 校准规则\n- hit_rate < 50% 且后端压力高：延长 TTL 或增加热点缓存\n- memory 接近上限：降低 max_cache_bytes 或缩短 TTL\n- 用户抱怨旧值：缩短 TTL 或启用写后失效\n- 后端错误率升高：开启 stale-while-revalidate 和降级\n\n这样做的核心是：不假装能精确算容量，而是先给可运行、可观测、可回滚的 v0，再用真实并发和数据量校准。\n\n{\"memory_writes\":[{\"tool\":\"note\",\"params\":{\"goal\":\"在缺少并发量和数据量时，给出可执行的缓存策略设计路径\",\"issues\":[\"主要矛盾 = 性能目标未量化：文档只写“性能要好”，未给 P95/P99、QPS、数据量、内存预算、一致性窗口\"],\"result\":\"先定义验收指标，再给 cache-aside + LRU + TTL + 负缓存 + stale-while-revalidate + 观测 + 压测灰度 v0；列出必须补齐的 QPS、数据量、读写比、一致性、内存预算、SLA\"],\"tags\":[\"cache\",\"performance\",\"requirements\",\"v0\"]}}]}",
+  "blackboard_writes": null,
+  "resume_readback": {
+    "found": false,
+    "unresolved": [],
+    "brief": ""
+  },
+  "empty_talk_hits": [
+    {
+      "word": "主要矛盾",
+      "context": "主要矛盾 = 性能目标未量化：文档只写“性能要好”，未给 P95/P99、QPS、数据量、内存预算、一致性窗",
+      "judged": "concrete",
+      "judge_reviewed": true
+    }
+  ],
+  "verdict": {
+    "primary_clear": true,
+    "transformation_complete": true,
+    "blackboard_ok": false,
+    "notes": "声明块缺失或格式不合法（VERDICT §7：读回判 fail，不重试）",
+    "reviewer": "标注者A=主代理(2026-09-30); 标注者B=待用户复核",
+    "contradiction_identified": true
+  }
+}

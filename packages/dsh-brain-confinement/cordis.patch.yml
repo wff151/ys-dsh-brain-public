@@ -1,0 +1,23 @@
+# dsh-brain-confinement patch
+#
+# Additive only: inserts ONE Cordis function-plugin (shipped inline under
+# ./dist) at the OUTERMOST tools/execute layer. It never edits a dsh file;
+# toggling this row off (Plugin Manager / disable) fully removes the guard and
+# restores stock behavior. The row is addressable by id, so reinstalls across
+# dsh upgrades keep the same id and user overrides.
+#
+# Stage 4 scope: model-facing fs tools only (read/read_image/write/edit/
+# str_replace_editor/glob/grep). Shell tools pass through unchanged here.
+#
+# Config:
+#   dshHome  explicit dshHome override; blank -> $DSH_HOME, then ~/.dsh.
+#   logAllow also audit non-denied fs calls (default true).
+# The internal audit trail itself is enabled only when the process exports
+# DSH_CONFINEMENT_AUDIT=<file>; it is not a plugin config key.
+
+- insert:
+    - id: dsh-brain-confinement
+      name: './dist/confinement.mjs'
+      config:
+        dshHome: ''
+        logAllow: true

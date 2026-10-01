@@ -1,0 +1,40 @@
+{
+  "name": "dsh-brain-bundle",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "One-shot installable bundle that mounts the dsh-brain memory + conduct plugins and the autonomous-programming (programmer) agent preset into a dsh >= 0.1.6 profile via the official Plugin Manager. Add-only, reversible, never edits the dsh source tree.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "node -e \"console.log('bundle has no TS sources; typecheck runs in dsh-brain-memory / dsh-brain-conduct')\""
+  },
+  "files": [
+    "dist",
+    "presets",
+    "cordis.patch.yml"
+  ],
+  "exports": {
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "link:../../../dsh-monorepo/vendor/cordis",
+    "@deepseek-ai/schemastery": "link:../../../dsh-monorepo/vendor/schemastery",
+    "@deepseek-ai/dsh-agent": "link:../../../dsh-monorepo/packages/core/agent",
+    "@deepseek-ai/dsh-agent-loop": "link:../../../dsh-monorepo/packages/core/agent-loop",
+    "@deepseek-ai/dsh-invariants": "link:../../../dsh-monorepo/packages/runtime-diagnostics/invariants",
+    "@deepseek-ai/dsh-session": "link:../../../dsh-monorepo/packages/core/session",
+    "@deepseek-ai/dsh-session-projection": "link:../../../dsh-monorepo/packages/session/session-projection",
+    "@deepseek-ai/dsh-storage": "link:../../../dsh-monorepo/packages/storage/storage",
+    "@deepseek-ai/dsh-storage-domain": "link:../../../dsh-monorepo/packages/storage/storage-domain",
+    "@deepseek-ai/dsh-storage-json": "link:../../../dsh-monorepo/packages/storage/storage-json",
+    "@deepseek-ai/dsh-system-prompt": "link:../../../dsh-monorepo/packages/core/system-prompt",
+    "@deepseek-ai/dsh-tools": "link:../../../dsh-monorepo/packages/core/tools",
+    "zod": "4.4.3"
+  }
+}

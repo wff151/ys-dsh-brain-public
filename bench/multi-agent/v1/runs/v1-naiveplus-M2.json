@@ -1,0 +1,164 @@
+{
+  "trace_id": "v1-naiveplus-M2",
+  "prompt_version": "naiveplus",
+  "task": "M2",
+  "category": "多轮动态",
+  "judge": "adaptation",
+  "stages": [
+    {
+      "stage": 1,
+      "input": "一周内将旧库（MySQL 5.7，4TB）迁移至新库（MySQL 8.0）。给出迁移方案与理由。",
+      "output": "主要问题：\n\n1. **4TB 数据量在一周内完成迁移**：核心约束是复制追平时间、网络带宽、写入增量和停机窗口。\n2. **MySQL 5.7 到 MySQL 8.0 是大版本迁移**：存在字符集、排序规则、SQL mode、认证插件、存储过程/触发器/视图、权限、连接协议等兼容性风险。\n3. **需要低停机、可验证、可回滚**：不能简单用 `mysqldump` 一次性导出导入，否则 4TB 数据量在一周内风险过高。\n\n处理方式：采用 **“旧库开启 binlog/GTID → 新库初始化 → 在线复制追平 → 冻结写入切换 → 验证与回滚”** 的方案。\n\n---\n\n## 一、迁移方案总览\n\n推荐方案：\n\n> **在线逻辑复制迁移**  \n> 旧库 MySQL 5.7 作为源库，新库 MySQL 8.0 作为目标库。  \n> 通过 binlog ROW 格式复制，最好启用 GTID，实现自动定位。  \n> 新库追平后，短暂冻结旧库写入，切换应用连接，完成迁移。\n\n不推荐方案：\n\n> 使用 `mysqldump` 全量导出再导入。  \n> 原因：4TB 数据量下，导出、传输、导入、校验时间过长，且难以保证低停机和一致性。\n\n---\n\n## 二、迁移前可行性判断\n\n### 1. 网络带宽\n\n4TB 数据量在一周内迁移，带宽非常关键。\n\n粗略估算：\n\n| 带宽 | 4TB 全量传输时间 |\n|---|---:|\n| 100Mbps | 约 3.2 天，仅算全量，不含增量和开销 |\n| 1Gbps | 约 3.2 小时，仅算全量，不含增量和开销 |\n| 10Gbps | 约 32 分钟，仅算全量，不含增量和开销 |\n\n建议：\n\n- 优先使用 **1Gbps 以上** 内网带宽。\n- 如果只有 100Mbps，需要压缩、限流、提前开始，并预留较多追平时间。\n- 如果带宽不足，应考虑：\n  - 只迁移核心库表；\n  - 使用压缩传输；\n  - 增加并行复制线程；\n  - 或延长迁移周期。\n\n### 2. 旧库是否可开启 binlog\n\n必须确认旧库是否已开启 binlog。\n\n如果旧库未开启 binlog，且无法重启，则很难做低停机在线迁移。\n\n建议旧库开启：\n\n```sql\nSET GLOBAL binlog_format = 'ROW';\nSET GLOBAL binlog_row_image = 'FULL';\nSET GLOBAL gtid_mode = 'ON';\nSET GLOBAL enforce_gtid_consistency = 'ON';\n```\n\n注意：\n\n- `gtid_mode` 在某些场景下可能需要重启。\n- 如果无法重启，可退回到传统 binlog 复制，使用 `MASTER_LOG_FILE` 和 `MASTER_LOG_POS`。\n- 如果旧库完全无法开启 binlog，则只能考虑离线 `mysqldump` 或 XtraBackup + 停机恢复，风险较高。\n\n### 3. 新库资源\n\n新库 MySQL 8.0 需要满足：\n\n- 磁盘空间至少大于旧库数据量，建议预留 1.5 倍空间。\n- 内存足够，尤其是 `innodb_buffer_pool_size`。\n- CPU 和 IO 能支撑复制追平和应用流量。\n- 网络与旧库同网段或低延迟。\n- 时区、字符集、排序规则、`lower_case_table_names` 等关键参数尽量一致。\n\n---\n\n## 三、迁移前兼容性审计\n\nMySQL 5.7 到 8.0 不是简单版本升级，必须提前审计。\n\n### 1. 字符集与排序规则\n\n重点检查：\n\n```sql\nSHOW VARIABLES LIKE 'character_set%';\nSHOW VARIABLES LIKE 'collation%';\n```\n\n常见风险：\n\n- 旧库使用 `utf8`，实际是 `utf8mb3`。\n- MySQL 8.0 默认使用 `utf8mb4`。\n- 旧库使用 `utf8_general_ci`，新库默认可能是 `utf8mb4_0900_ai_ci`。\n- 排序规则变化可能导致字符串比较、索引、唯一约束行为变化。\n- 中文、emoji、特殊字符可能受字符集变化影响。\n\n建议：\n\n- 如果应用兼容，优先迁移到 `utf8mb4`。\n- 如果应用强依赖旧排序规则，可保留旧表级排序规则。\n- 检查索引长度，`utf8mb4` 下索引长度可能变长。\n\n### 2. SQL mode\n\n检查：\n\n```sql\nSELECT @@sql_mode;\n```\n\nMySQL 8.0 默认更严格。\n\n常见风险：\n\n- 旧库允许空值、隐式类型转换、宽松插入。\n- 新库可能拒绝非法日期、越界值、类型不匹配。\n- 应用可能依赖旧库的宽松行为。\n\n建议：\n\n- 提前在测试库用 MySQL 8.0 跑应用回归测试。\n- 必要时临时调整 `sql_mode`，但长期建议修复应用。\n\n### 3. 认证插件\n\nMySQL 8.0 默认使用 `caching_sha2_password`。\n\n旧应用或旧客户端可能只支持 `mysql_native_password`。\n\n风险：\n\n- 应用连接失败。\n- 某些旧 JDBC、ODBC、CLI 工具不兼容。\n\n建议：\n\n- 提前测试应用连接。\n- 如果客户端不支持 `caching_sha2_password`，可评估临时使用 `mysql_native_password`，但需确认目标 MySQL 8.0 版本是否允许。\n- 更推荐升级客户端或驱动。\n\n### 4. 存储过程、触发器、视图、函数\n\n重点检查：\n\n- 存储过程中是否使用 5.7 特有语法。\n- 触发器中是否依赖旧 SQL mode。\n- 视图中是否使用不兼容函数。\n- 用户自定义函数是否在新库重新创建。\n- 权限是否完整迁移。\n\n建议：\n\n- 导出并审查：\n\n```sql\nSHOW CREATE PROCEDURE xxx;\nSHOW CREATE FUNCTION xxx;\nSHOW CREATE TRIGGER xxx;\nSHOW CREATE VIEW xxx;\n```\n\n- 在新库测试执行。\n\n### 5. 权限\n\n需要迁移：\n\n- 应用账号；\n- 复制账号；\n- 备份账号；\n- 运维账号；\n- 存储过程执行权限；\n- 数据库级权限；\n- 表级权限。\n\n建议：\n\n- 使用 `mysqldump --routines --triggers --events --all-databases` 导出相关对象。\n- 在新库执行后验证。\n\n### 6. 其他关键参数\n\n建议保持一致或提前确认：\n\n```sql\nlower_case_table_names\ncharacter_set_server\ncollation_server\nsql_mode\nmax_allowed_packet\ninnodb_buffer_pool_size\ninnodb_file_per_table\ntime_zone\nexplicit_defaults_for_timestamp\n```\n\n特别注意：\n\n- `lower_case_table_names` 在 Linux 上一旦设置，通常需要在初始化前确定。\n- 如果旧库存在大小写混用的表名，新库必须保持一致。\n\n---\n\n## 四、迁移实施步骤\n\n### 第一步：准备新库 MySQL 8.0\n\n新库初始化时建议设置：\n\n```sql\nSET GLOBAL character_set_server = 'utf8mb4';\nSET GLOBAL collation_server = 'utf8mb4_0900_ai_ci';\nSET GLOBAL lower_case_table_names = 0;\nSET GLOBAL max_allowed_packet = '1G';\nSET GLOBAL innodb_buffer_pool_size = '8G';\n```\n\n具体值根据服务器内存调整。\n\n如果旧库使用旧排序规则，且应用强依赖，可考虑：\n\n```sql\nSET GLOBAL collation_server = 'utf8mb4_general_ci';\n```\n\n但更推荐长期使用 `utf8mb4_0900_ai_ci`。\n\n---\n\n### 第二步：旧库开启 binlog 和复制账号\n\n在旧库创建复制账号：\n\n```sql\nCREATE USER 'rep'@'%' IDENTIFIED BY 'strong_password';\nGRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'rep'@'%';\nFLUSH PRIVILEGES;\n```\n\n如果旧库支持 GTID，开启 GTID：\n\n```sql\nSET GLOBAL gtid_mode = 'ON';\nSET GLOBAL enforce_gtid_consistency = 'ON';\n```\n\n如果无法在线开启 GTID，则使用传统 binlog 复制。\n\n获取旧库 binlog 位置：\n\n```sql\nSHOW MASTER STATUS;\n```\n\n或 GTID 状态：\n\n```sql\nSHOW GTID STATUS;\n```\n\n---\n\n### 第三步：在新库建立复制\n\n如果旧库已启用 GTID，新库可配置：\n\n```sql\nCHANGE REPLICATION SOURCE TO\n  SOURCE_HOST = 'old_mysql_ip',\n  SOURCE_USER = 'rep',\n  SOURCE_PASSWORD = 'strong_password',\n  SOURCE_AUTO_POSITION = 1;\n\nSTART REPLICA;\n```\n\n如果旧库未启用 GTID，则使用 binlog 文件位置和偏移量：\n\n```sql\nCHANGE REPLICATION SOURCE TO\n  SOURCE_HOST = 'old_mysql_ip',\n  SOURCE_USER = 'rep',\n  SOURCE_PASSWORD = 'strong_password',\n  SOURCE_LOG_FILE = 'mysql-bin.000001',\n  SOURCE_LOG_POS = 123456;\n\nSTART REPLICA;\n```\n\n查看复制状态：\n\n```sql\nSHOW REPLICA STATUS\\G\n```\n\n重点字段：\n\n```text\nReplica_IO_Running: Yes\nReplica_SQL_Running: Yes\nSeconds_Behind_Source: 0\n```\n\n---\n\n### 第四步：等待新库追平\n\n4TB 数据量下，这一步可能是最长耗时。\n\n监控：\n\n```sql\nSHOW REPLICA STATUS\\G\n```\n\n关注：\n\n- `Seconds_Behind_Source`\n- `Replica_IO_Running`\n- `Replica_SQL_Running`\n- 新库磁盘空间\n- 新库 CPU、IO、网络\n- 旧库 binlog 大小\n\n如果追平慢，可考虑：\n\n- 增加网络带宽；\n- 压缩 binlog 传输；\n- 调整复制线程；\n- 临时降低旧库非核心写入；\n- 排除大 BLOB 表或大对象表，单独迁移；\n- 使用 XtraBackup 做物理全量备份，再结合 binlog 增量追平。\n\n---\n\n### 第五步：切换前演练\n\n正式切换前，必须演练一次。\n\n演练步骤：\n\n1. 旧库冻结写入：\n\n```sql\nSET GLOBAL read_only = ON;\n```\n\n2. 等待复制追平：\n\n```sql\nSHOW REPLICA STATUS\\G\n```\n\n确认：\n\n```text\nSeconds_Behind_Source: 0\n```\n\n3. 停止复制：\n\n```sql\nSTOP REPLICA;\n```\n\n4. 切换应用连接字符串到新库。\n\n5. 重启应用连接池。\n\n6. 执行核心业务验证：\n   - 登录；\n   - 查询；\n   - 写入；\n   - 事务；\n   - 报表；\n   - 定时任务；\n   - 接口调用。\n\n7. 验证通过后，观察 15 到 30 分钟。\n\n8. 如果失败，切回旧库：\n\n```sql\nSET GLOBAL read_only = OFF;\n```\n\n并恢复应用连接。\n\n---\n\n### 第六步：正式切换\n\n正式切换建议安排在业务低峰期。\n\n步骤：\n\n1. 通知业务进入只读或暂停写入。\n2. 旧库设置只读：\n\n```sql\nSET GLOBAL read_only = ON;\n```\n\n3. 等待复制完全追平：\n\n```sql\nSHOW REPLICA STATUS\\G\n```\n\n确认：\n\n```text\nSeconds_Behind_Source: 0\n```\n\n4. 停止复制：\n\n```sql\nSTOP REPLICA;\n```\n\n5. 切换应用连接字符串到新库。\n6. 重启应用或刷新连接池。\n7. 执行冒烟测试。\n8. 观察错误日志、慢查询、连接数、CPU、IO。\n9. 确认稳定后，旧库保持只读一段时间。\n10. 后续可将旧库作为备份或降级为从库。\n\n---\n\n## 五、数据一致性验证\n\n切换后必须验证数据一致性。\n\n### 1. 行数验证\n\n对核心表执行：\n\n```sql\nSELECT COUNT(*) FROM table_name;\n```\n\n对比旧库和新库。\n\n### 2. 关键表校验\n\n对核心业务表做 checksum 或抽样校验。\n\n例如：\n\n```sql\nSELECT MD5(CONCAT_WS(',', id, name, status, updated_at))\nFROM table_name\nORDER BY id\nLIMIT 1000;\n```\n\n更严谨可使用：\n\n- `pt-table-checksum`；\n- 应用层业务校验；\n- 关键表聚合值校验。\n\n### 3. 业务验证\n\n必须验证：\n\n- 登录；\n- 核心查询；\n- 核心写入；\n- 事务提交；\n- 外键约束；\n- 唯一索引；\n- 定时任务；\n- 报表；\n- 导出；\n- 缓存刷新；\n- 消息队列消费；\n- 接口幂等。\n\n---\n\n## 六、回滚方案\n\n回滚是低停机迁移的关键。\n\n### 回滚条件\n\n出现以下情况应立即回滚：\n\n- 应用连接失败；\n- 核心业务报错；\n- 数据校验失败；\n- 性能明显下降；\n- 复制异常；\n- 存储过程/触发器执行失败；\n- 字符集或排序规则导致业务异常。\n\n### 回滚步骤\n\n1. 应用切回旧库连接。\n2. 旧库恢复写入：\n\n```sql\nSET GLOBAL read_only = OFF;\n```\n\n3. 检查旧库数据是否完整。\n4. 新库保留一段时间，用于排查问题。\n5. 修复问题后重新演练切换。\n\n---\n\n## 七、一周迁移排期建议\n\n假设旧库可开启 binlog，网络带宽足够。\n\n### Day 0：准备与审计\n\n- 确认旧库 MySQL 5.7 版本、数据量、写入量。\n- 确认新库 MySQL 8.0 版本、资源、网络。\n- 检查 binlog 是否开启。\n- 检查字符集、排序规则、SQL mode、认证插件。\n- 导出存储过程、触发器、视图、函数、权限。\n- 做旧库备份。\n- 建立测试环境，验证应用兼容性。\n\n### Day 1：旧库开启 binlog，新库初始化\n\n- 旧库开启 binlog ROW。\n- 尽量开启 GTID。\n- 创建复制账号。\n- 新库初始化。\n- 设置字符集、排序规则、参数。\n- 建立复制关系。\n- 开始全量复制。\n\n### Day 2：全量复制与兼容性修复\n\n- 监控复制追平进度。\n- 修复应用兼容问题。\n- 测试存储过程、触发器、视图。\n- 测试连接认证。\n- 测试核心业务。\n\n### Day 3：继续追平与压力测试\n\n- 等待复制追平。\n- 在新库做压力测试。\n- 检查慢查询。\n- 检查连接数。\n- 检查磁盘空间。\n- 检查复制延迟。\n\n### Day 4：切换演练\n\n- 演练冻结写入。\n- 演练切换连接。\n- 演练回滚。\n- 确认切换脚本。\n- 确认回滚脚本。\n- 确认监控告警。\n\n### Day 5：正式切换\n\n- 选择低峰窗口。\n- 冻结旧库写入。\n- 等待复制追平。\n- 切换应用。\n- 验证核心业务。\n- 观察 30 分钟到数小时。\n- 确认稳定后宣布迁移完成。\n\n---\n\n## 八、为什么选择这个方案\n\n### 1. 在线复制可显著降低停机时间\n\n`mysqldump` 需要全量导出和导入，4TB 数据量下停机窗口不可控。\n\n在线复制可以让新库提前追平，正式切换时只需要：\n\n- 冻结写入；\n- 等待复制追平；\n- 切换连接。\n\n停机时间通常可以控制在秒级到分钟级。\n\n### 2. GTID 或 binlog 复制可保证数据一致性\n\nGTID 自动定位，避免手动记录 binlog 文件位置和偏移量。\n\n即使复制中断，也能更容易恢复。\n\n### 3. 可提前暴露版本兼容问题\n\n在正式切换前，新库已经运行了复制数据，可以提前发现：\n\n- 字符集问题；\n- 排序规则问题；\n- SQL mode 问题；\n- 存储过程问题；\n- 认证插件问题；\n- 权限问题。\n\n### 4. 可回滚\n\n旧库在切换后仍保留一段时间。\n\n如果新库出现问题，可以切回旧库，避免业务长时间中断。\n\n### 5. 适合 4TB 数据量\n\n4TB 数据量不适合一次性逻辑导出导入。\n\n在线复制、物理备份 + binlog 增量、或 XtraBackup + binlog 增量，都是更合理的方向。\n\n其中，**在线逻辑复制**通常最容易操作、最容易验证、最容易回滚。\n\n---\n\n## 九、关键风险与应对\n\n| 风险 | 影响 | 应对 |\n|---|---|---|\n| 旧库未开启 binlog | 无法在线复制 | 提前开启，必要时安排重启 |\n| 带宽不足 | 追平超过一周 | 增加带宽、压缩、限流、提前开始 |\n| 写入量过大 | 复制延迟高 | 低峰切换、临时限流、核心表优先 |\n| 字符集变化 | 数据乱码、索引异常 | 提前审计，测试库验证 |\n| 排序规则变化 | 字符串比较异常 | 保留旧排序规则或修复应用 |\n| SQL mode 变严格 | 写入失败 | 提前回归测试，必要时临时调整 |\n| 认证插件不兼容 | 应用连接失败 | 提前测试客户端，必要时调整认证插件 |\n| 存储过程不兼容 | 业务失败 | 导出审查，新库测试执行 |\n| 复制中断 | 追平失败 | 监控 IO/SQL 线程，及时修复 |\n| 切换后性能下降 | 业务异常 | 提前压测，调整参数，观察慢查询 |\n\n---\n\n## 十、推荐最终方案\n\n最终推荐：\n\n1. **旧库 MySQL 5.7 开启 binlog ROW，最好开启 GTID。**\n2. **新库 MySQL 8.0 初始化，参数尽量兼容旧库。**\n3. **新库建立从库复制，开始全量追平。**\n4. **提前完成兼容性审计和应用回归测试。**\n5. **Day 4 做切换演练和回滚演练。**\n6. **Day 5 低峰期正式切换。**\n7. **切换后验证数据一致性、业务功能、性能指标。**\n8. **旧库保留只读一段时间，作为回滚和备份。**\n\n该方案的核心理由是：\n\n> 对 4TB 的 MySQL 5.7 到 MySQL 8.0 迁移，最稳妥的方式不是“一次性导出导入”，而是“在线复制追平 + 低峰切换 + 可回滚验证”。\n\n{\"memory_writes\":[{\"tool\":\"note\",\"params\":{\"goal\":\"在一周内将 MySQL 5.7 4TB 库迁移到 MySQL 8.0，并给出可执行方案与理由\",\"issues\":[\"4TB 数据量在一周内完成需要足够带宽和复制追平时间\",\"MySQL 5.7 到 8.0 大版本存在字符集、排序规则、SQL mode、认证插件、存储过程等兼容性风险\",\"迁移需要低停机、可验证、可回滚，且旧库可能未开启 binlog/GTID\"],\"result\":\"推荐采用旧库开启 binlog ROW/GTID，新库初始化后建立在线复制，追平后冻结写入切换，完成验证与回滚预案；一周排期包含审计、全量复制、追平、演练、正式切换。\",\"tags\":[\"mysql\",\"migration\",\"mysql-5.7-to-8.0\",\"4tb\",\"online-replication\",\"gtid\",\"rollback\"]}}]}",
+      "memory_writes": [
+        {
+          "tool": "note",
+          "params": {
+            "goal": "在一周内将 MySQL 5.7 4TB 库迁移到 MySQL 8.0，并给出可执行方案与理由",
+            "issues": [
+              "4TB 数据量在一周内完成需要足够带宽和复制追平时间",
+              "MySQL 5.7 到 8.0 大版本存在字符集、排序规则、SQL mode、认证插件、存储过程等兼容性风险",
+              "迁移需要低停机、可验证、可回滚，且旧库可能未开启 binlog/GTID"
+            ],
+            "result": "推荐采用旧库开启 binlog ROW/GTID，新库初始化后建立在线复制，追平后冻结写入切换，完成验证与回滚预案；一周排期包含审计、全量复制、追平、演练、正式切换。",
+            "tags": [
+              "mysql",
+              "migration",
+              "mysql-5.7-to-8.0",
+              "4tb",
+              "online-replication",
+              "gtid",
+              "rollback"
+            ]
+          }
+        }
+      ],
+      "formatOk": true
+    },
+    {
+      "stage": 2,
+      "input": "运维反馈：旧库部分表存在重复订单号、空字段；备份周期为每周一次，上周备份因磁盘满失败，最近一次完整备份为 3 周前。先查看上一阶段的记录与未解决问题，再给出调整后的方案与理由。",
+      "output": "处理方式：先应查看上一阶段的记录与未解决问题清单；当前环境无法访问外部记录，因此以下基于你给出的阶段 1 结论和运维反馈进行推断。\n\n主要问题：  \n当前“一周内直接全量迁移”的风险不可控。核心问题不是迁移工具或时间窗口本身，而是迁移前置条件不足：旧库已有重复订单号和空字段等数据质量问题，且最近一次完整备份是 3 周前，上周备份又因磁盘满失败。若直接全量迁移，可能把脏数据批量带入新系统，同时一旦迁移失败或新库异常，可回滚/恢复的数据基础也不充分。\n\n调整后的方案：  \n1. 暂停“直接全量迁移”，改为“受控迁移”。  \n   - 如果业务必须在一周内完成，则目标改为“一周内完成受控迁移”，而不是无前置治理的全量迁移。\n\n2. 先补齐备份与恢复能力。  \n   - 立即执行一次完整备份，并验证备份文件可恢复。  \n   - 迁移前增加增量备份或实时日志备份。  \n   - 明确回滚点：迁移前、清洗后、灰度前、全量前各设一个可恢复状态。\n\n3. 先处理关键数据质量问题。  \n   - 对重复订单号进行识别、去重或建立唯一键约束。  \n   - 对空字段进行补全、默认值填充或明确业务含义。  \n   - 至少覆盖订单、支付、库存、用户等核心表，避免迁移后出现主键冲突、重复扣款、重复发货等问题。\n\n4. 迁移方式从“直接全量”改为“灰度/分批迁移”。  \n   - 先迁移低风险或读多写少的表。  \n   - 再迁移核心业务表。  \n   - 最后切换写入流量。  \n   - 每批迁移后做数据一致性校验：行数、金额合计、关键唯一键、抽样业务核对。\n\n5. 设置明确验收标准。  \n   - 备份恢复验证通过。  \n   - 重复订单号清零或已有明确处理规则。  \n   - 空字段治理完成或业务确认可接受。  \n   - 新旧库数据一致性校验通过。  \n   - 回滚方案演练通过。\n\n理由：  \n当前最大风险是“数据质量风险 + 备份不足风险”叠加。旧库重复订单号和空字段说明源数据本身不可直接信任；最近完整备份为 3 周前，且上周备份失败，说明一旦迁移过程中出现不可逆错误，恢复成本很高。因此，直接全量迁移会把源数据问题、备份风险和切换风险同时暴露到生产环境。更稳妥的做法是先治理数据、补齐备份、验证恢复，再分批迁移，这样即使出现异常，也能在较小范围内回滚和修复。\n\n{\"memory_writes\":[{\"tool\":\"remember\",\"params\":{\"goal\":\"将一周内直接全量迁移调整为受控迁移，降低数据丢失与脏数据风险\",\"issues\":[\"上一阶段记录当前不可访问，无法确认完整未解决问题清单\",\"旧库部分表存在重复订单号\",\"旧库部分字段为空\",\"备份周期为每周一次且上周备份失败\",\"最近一次完整备份为3周前\",\"直接全量迁移可能把脏数据带入新库并放大备份不足风险\"],\"result\":\"建议先完成备份恢复验证、数据去重与空字段治理，再采用灰度或分批迁移并保留回滚能力；若必须一周内完成，则改为受控迁移而非直接全量迁移\",\"tags\":[\"migration\",\"data-quality\",\"backup\",\"rollback\",\"risk\"]}}]}",
+      "memory_writes": [
+        {
+          "tool": "remember",
+          "params": {
+            "goal": "将一周内直接全量迁移调整为受控迁移，降低数据丢失与脏数据风险",
+            "issues": [
+              "上一阶段记录当前不可访问，无法确认完整未解决问题清单",
+              "旧库部分表存在重复订单号",
+              "旧库部分字段为空",
+              "备份周期为每周一次且上周备份失败",
+              "最近一次完整备份为3周前",
+              "直接全量迁移可能把脏数据带入新库并放大备份不足风险"
+            ],
+            "result": "建议先完成备份恢复验证、数据去重与空字段治理，再采用灰度或分批迁移并保留回滚能力；若必须一周内完成，则改为受控迁移而非直接全量迁移",
+            "tags": [
+              "migration",
+              "data-quality",
+              "backup",
+              "rollback",
+              "risk"
+            ]
+          }
+        }
+      ],
+      "formatOk": true
+    }
+  ],
+  "injected_change": {
+    "stage": 2,
+    "change": "旧库脏数据 + 备份链不可信（模型需自推\"无可信备份\"）"
+  },
+  "blackboard_writes": [
+    {
+      "tool": "note",
+      "params": {
+        "goal": "在一周内将 MySQL 5.7 4TB 库迁移到 MySQL 8.0，并给出可执行方案与理由",
+        "issues": [
+          "4TB 数据量在一周内完成需要足够带宽和复制追平时间",
+          "MySQL 5.7 到 8.0 大版本存在字符集、排序规则、SQL mode、认证插件、存储过程等兼容性风险",
+          "迁移需要低停机、可验证、可回滚，且旧库可能未开启 binlog/GTID"
+        ],
+        "result": "推荐采用旧库开启 binlog ROW/GTID，新库初始化后建立在线复制，追平后冻结写入切换，完成验证与回滚预案；一周排期包含审计、全量复制、追平、演练、正式切换。",
+        "tags": [
+          "mysql",
+          "migration",
+          "mysql-5.7-to-8.0",
+          "4tb",
+          "online-replication",
+          "gtid",
+          "rollback"
+        ]
+      }
+    },
+    {
+      "tool": "remember",
+      "params": {
+        "goal": "将一周内直接全量迁移调整为受控迁移，降低数据丢失与脏数据风险",
+        "issues": [
+          "上一阶段记录当前不可访问，无法确认完整未解决问题清单",
+          "旧库部分表存在重复订单号",
+          "旧库部分字段为空",
+          "备份周期为每周一次且上周备份失败",
+          "最近一次完整备份为3周前",
+          "直接全量迁移可能把脏数据带入新库并放大备份不足风险"
+        ],
+        "result": "建议先完成备份恢复验证、数据去重与空字段治理，再采用灰度或分批迁移并保留回滚能力；若必须一周内完成，则改为受控迁移而非直接全量迁移",
+        "tags": [
+          "migration",
+          "data-quality",
+          "backup",
+          "rollback",
+          "risk"
+        ]
+      }
+    }
+  ],
+  "folded": {
+    "goal": "将一周内直接全量迁移调整为受控迁移，降低数据丢失与脏数据风险",
+    "issues": [
+      "4TB 数据量在一周内完成需要足够带宽和复制追平时间",
+      "MySQL 5.7 到 8.0 大版本存在字符集、排序规则、SQL mode、认证插件、存储过程等兼容性风险",
+      "迁移需要低停机、可验证、可回滚，且旧库可能未开启 binlog/GTID",
+      "上一阶段记录当前不可访问，无法确认完整未解决问题清单",
+      "旧库部分表存在重复订单号",
+      "旧库部分字段为空",
+      "备份周期为每周一次且上周备份失败",
+      "最近一次完整备份为3周前",
+      "直接全量迁移可能把脏数据带入新库并放大备份不足风险"
+    ],
+    "result": "建议先完成备份恢复验证、数据去重与空字段治理，再采用灰度或分批迁移并保留回滚能力；若必须一周内完成，则改为受控迁移而非直接全量迁移",
+    "tags": [
+      "mysql",
+      "migration",
+      "mysql-5.7-to-8.0",
+      "4tb",
+      "online-replication",
+      "gtid",
+      "rollback",
+      "migration",
+      "data-quality",
+      "backup",
+      "rollback",
+      "risk"
+    ]
+  },
+  "resume_readback": {
+    "found": true,
+    "unresolved": [
+      "4TB 数据量在一周内完成需要足够带宽和复制追平时间",
+      "MySQL 5.7 到 8.0 大版本存在字符集、排序规则、SQL mode、认证插件、存储过程等兼容性风险",
+      "迁移需要低停机、可验证、可回滚，且旧库可能未开启 binlog/GTID"
+    ],
+    "brief": "=== 可接续的历史任务（断点续跑，共 1 个）===\n\n[1] 新建对话（日常，第 1 次交换，最近活动 2026-09-30 13:34）\n  会话：v1-naiveplus-M2-s1\n  目标：在一周内将 MySQL 5.7 4TB 库迁移到 MySQL 8.0，并给出可执行方案与理由\n  已解决：无\n  待解决：4TB 数据量在一周内完成需要足够带宽和复制追平时间、MySQL 5.7 到 8.0 大版本存在字符集、排序规则、SQL mode、认证插件、存储过程等兼容性风险、迁移需要低停机、可验证、可回滚，且旧库可能未开启 binlog/GTID\n\n以上仅为历史记录，不代表现在要自动执行。请先向用户确认要接续哪一个任务；确认后可用 brain 工具 action=search 回忆相关细节，再从“待解决”处继续。不要自动重放之前的工具调用或任何有副作用的操作。"
+  },
+  "public_readback": {
+    "found": false,
+    "unresolved": []
+  },
+  "verdict": {
+    "resistance": "Y",
+    "blackboard_ok": null,
+    "notes": "暂停直接全量→受控迁移+备份验证/数据治理/分批"
+  }
+}

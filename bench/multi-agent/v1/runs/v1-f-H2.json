@@ -1,0 +1,100 @@
+{
+  "trace_id": "v1-f-H2",
+  "prompt_version": "f",
+  "task": "H2",
+  "category": "真信息不全",
+  "judge": "hypothesis",
+  "stages": [
+    {
+      "stage": 1,
+      "input": "双十一大促容量规划。去年峰值数据由另一团队管理，监控系统记录了历史流量。请给出容量方案与理由。",
+      "output": "分析\n\n1. 主要矛盾 = 去年峰值基线未直接交付，导致容量倍率只能依赖监控系统历史流量推断（未解决则 target_TPS 无法确定）\n2. 依据 = 监控系统已记录 2025-11-11 每分钟订单创建 TPS、p99_latency、cpu_util、db_conn_util；去年峰值数据由另一团队管理，未交付，因此以 max_historical_peak_TPS 为基线\n3. 次重要矛盾 = 订单写入 TPS 与 MySQL 连接池上限冲突（未解决则 p99_latency 超 300ms）\n4. 转化条件 = 信号 = 订单写入 TPS / MySQL 连接池上限；阈值 = >70%；动作 = 增加 MySQL 从库/连接池上限/读写分离，并压测验证 p99_latency < 300ms\n5. 次要矛盾 = 告警阈值未覆盖 Redis 缓存命中率（不处理原因 = 不影响订单成功率，只影响告警噪音）\n\n容量方案\n\n1. 数据口径与目标\n- 从监控系统导出 2025-11-11 00:00-23:59 每分钟订单创建 TPS，重点覆盖 10:00-12:00、20:00-22:00。\n- 若另一团队未交付 last_year_peak_TPS，则 last_year_peak_TPS = max_historical_peak_TPS。\n- target_TPS = max(last_year_peak_TPS * 1.3, forecast_TPS * 1.2)。\n- 验收标准：订单成功率 >= 99.9%，p99_latency <= 300ms，CPU <= 60%，MySQL 连接池使用率 <= 70%，Kafka 积压 <= 5min。\n\n2. 服务层容量\n- 订单创建服务：instances = ceil(target_TPS / per_instance_TPS * 1.2)。per_instance_TPS 以压测中 p99_latency <= 300ms 的最大稳定值为准。\n- 支付服务：target_payment_TPS = target_TPS * 0.8，按同一公式扩容。\n- 库存服务：target_inventory_TPS = target_TPS * 0.6，优先保证扣减接口 p99_latency <= 250ms。\n- 商品详情服务：target_read_QPS = target_TPS * 3，通过 CDN、Redis 缓存和 API 网关限流承接。\n\n3. 数据层容量\n- MySQL：启用主从读写分离，订单写入走主库，查询走从库。连接池上限 = ceil(target_TPS / 50 * 1.5)。\n- 当 db_conn_util > 70% 时，触发增加从库、扩大连接池或拆分订单表。\n- Kafka：非实时链路（积分、日志、推荐更新）写入队列，partition 数 = ceil(target_TPS / 1000)。\n- Redis：热点 SKU 预热，TTL = 60s；当 cache_miss_rate > 30% 时，增加预热范围或延长 TTL。\n\n4. 入口与保护\n- API 网关按用户限流：单用户 10 QPS，全局按 target_TPS * 1.1 限流。\n- 非核心功能降级：评价、推荐、营销弹窗在 p99_latency > 300ms 时关闭。\n- 静态资源走 CDN，API 请求走多 AZ 负载均衡。\n\n5. 压测与验证\n- T-14：压测 1.5 * target_TPS，要求 p99_latency <= 300ms，错误率 <= 0.1%。\n- T-7：验证 MySQL 主从切换、Redis 节点故障、Kafka 分区倾斜。\n- T-1：执行 2 * target_TPS 的 10 分钟峰值演练，确认扩容动作可在 5min 内生效。\n\n6. 监控与应急\n- 告警阈值：CPU > 60% 持续 10min，p99_latency > 300ms 持续 5min，错误率 > 0.1% 持续 5min，db_conn_util > 70%，Kafka 积压 > 5min。\n- 应急动作：p99_latency > 300ms 时自动扩容订单创建服务；db_conn_util > 70% 时开启只读从库；cache_miss_rate > 30% 时启动热点 SKU 预热。\n\n{\"memory_writes\":[{\"tool\":\"note\",\"params\":{\"goal\":\"双十一大促容量规划：基于监控系统历史流量确定 target_TPS，并给出服务、数据库、缓存、队列、压测与监控方案\",\"issues\":[\"去年峰值基线未直接交付，需以 max_historical_peak_TPS 作为 fallback\",\"订单写入 TPS 与 MySQL 连接池上限可能冲突，需 db_conn_util <= 70%\"],\"result\":[\"确定 target_TPS = max(last_year_peak_TPS * 1.3, forecast_TPS * 1.2)\",\"确定服务扩容公式 instances = ceil(target_TPS / per_instance_TPS * 1.2)\",\"确定 MySQL 连接池上限 = ceil(target_TPS / 50 * 1.5)\",\"确定压测目标 1.5 * target_TPS 与 T-1 演练 2 * target_TPS\"],\"tags\":[\"capacity\",\"double11\",\"monitoring\",\"load-test\"]}}]}",
+      "memory_writes": [
+        {
+          "tool": "note",
+          "params": {
+            "goal": "双十一大促容量规划：基于监控系统历史流量确定 target_TPS，并给出服务、数据库、缓存、队列、压测与监控方案",
+            "issues": [
+              "去年峰值基线未直接交付，需以 max_historical_peak_TPS 作为 fallback",
+              "订单写入 TPS 与 MySQL 连接池上限可能冲突，需 db_conn_util <= 70%"
+            ],
+            "result": [
+              "确定 target_TPS = max(last_year_peak_TPS * 1.3, forecast_TPS * 1.2)",
+              "确定服务扩容公式 instances = ceil(target_TPS / per_instance_TPS * 1.2)",
+              "确定 MySQL 连接池上限 = ceil(target_TPS / 50 * 1.5)",
+              "确定压测目标 1.5 * target_TPS 与 T-1 演练 2 * target_TPS"
+            ],
+            "tags": [
+              "capacity",
+              "double11",
+              "monitoring",
+              "load-test"
+            ]
+          }
+        }
+      ],
+      "formatOk": true
+    }
+  ],
+  "injected_change": null,
+  "blackboard_writes": [
+    {
+      "tool": "note",
+      "params": {
+        "goal": "双十一大促容量规划：基于监控系统历史流量确定 target_TPS，并给出服务、数据库、缓存、队列、压测与监控方案",
+        "issues": [
+          "去年峰值基线未直接交付，需以 max_historical_peak_TPS 作为 fallback",
+          "订单写入 TPS 与 MySQL 连接池上限可能冲突，需 db_conn_util <= 70%"
+        ],
+        "result": [
+          "确定 target_TPS = max(last_year_peak_TPS * 1.3, forecast_TPS * 1.2)",
+          "确定服务扩容公式 instances = ceil(target_TPS / per_instance_TPS * 1.2)",
+          "确定 MySQL 连接池上限 = ceil(target_TPS / 50 * 1.5)",
+          "确定压测目标 1.5 * target_TPS 与 T-1 演练 2 * target_TPS"
+        ],
+        "tags": [
+          "capacity",
+          "double11",
+          "monitoring",
+          "load-test"
+        ]
+      }
+    }
+  ],
+  "folded": {
+    "goal": "双十一大促容量规划：基于监控系统历史流量确定 target_TPS，并给出服务、数据库、缓存、队列、压测与监控方案",
+    "issues": [
+      "去年峰值基线未直接交付，需以 max_historical_peak_TPS 作为 fallback",
+      "订单写入 TPS 与 MySQL 连接池上限可能冲突，需 db_conn_util <= 70%"
+    ],
+    "result": [
+      "确定 target_TPS = max(last_year_peak_TPS * 1.3, forecast_TPS * 1.2)",
+      "确定服务扩容公式 instances = ceil(target_TPS / per_instance_TPS * 1.2)",
+      "确定 MySQL 连接池上限 = ceil(target_TPS / 50 * 1.5)",
+      "确定压测目标 1.5 * target_TPS 与 T-1 演练 2 * target_TPS"
+    ],
+    "tags": [
+      "capacity",
+      "double11",
+      "monitoring",
+      "load-test"
+    ]
+  },
+  "resume_readback": {
+    "found": true,
+    "unresolved": [
+      "去年峰值基线未直接交付，需以 max_historical_peak_TPS 作为 fallback",
+      "订单写入 TPS 与 MySQL 连接池上限可能冲突，需 db_conn_util <= 70%"
+    ],
+    "brief": "=== 可接续的历史任务（断点续跑，共 1 个）===\n\n[1] 新建对话（日常，第 1 次交换，最近活动 2026-09-30 17:51）\n  会话：v1-f-H2-s1\n  目标：双十一大促容量规划：基于监控系统历史流量确定 target_TPS，并给出服务、数据库、缓存、队列、压测与监控方案\n  已解决：无\n  待解决：去年峰值基线未直接交付，需以 max_historical_peak_TPS 作为 fallback、订单写入 TPS 与 MySQL 连接池上限可能冲突，需 db_conn_util <= 70%\n\n以上仅为历史记录，不代表现在要自动执行。请先向用户确认要接续哪一个任务；确认后可用 brain 工具 action=search 回忆相关细节，再从“待解决”处继续。不要自动重放之前的工具调用或任何有副作用的操作。"
+  },
+  "public_readback": {
+    "found": false,
+    "unresolved": []
+  },
+  "verdict": {
+    "resistance": "Y",
+    "blackboard_ok": null,
+    "notes": "自发假设（监控历史替代峰值）+验证动作（压测1.5x/演练2x）"
+  }
+}

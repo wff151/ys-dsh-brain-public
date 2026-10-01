@@ -1,0 +1,35 @@
+{
+  "name": "dsh-brain-memory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Three-layer memory + retrieval trio + portable docs, with decay / auto-record / reflection / failure-fingerprint proposals / budget and optional real-vector semantic retrieval. Cordis function-plugin for dsh 0.1.6, bundled by dsh-brain-bundle.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx/esm tests/run-all.mjs"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-agent": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-storage-domain": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-tools": "0.1.6-alpha.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "link:../../../dsh-monorepo/vendor/cordis",
+    "@deepseek-ai/schemastery": "link:../../../dsh-monorepo/vendor/schemastery",
+    "@deepseek-ai/dsh-agent": "link:../../../dsh-monorepo/packages/core/agent",
+    "@deepseek-ai/dsh-agent-loop": "link:../../../dsh-monorepo/packages/core/agent-loop",
+    "@deepseek-ai/dsh-invariants": "link:../../../dsh-monorepo/packages/runtime-diagnostics/invariants",
+    "@deepseek-ai/dsh-session": "link:../../../dsh-monorepo/packages/core/session",
+    "@deepseek-ai/dsh-session-projection": "link:../../../dsh-monorepo/packages/session/session-projection",
+    "@deepseek-ai/dsh-storage": "link:../../../dsh-monorepo/packages/storage/storage",
+    "@deepseek-ai/dsh-storage-domain": "link:../../../dsh-monorepo/packages/storage/storage-domain",
+    "@deepseek-ai/dsh-storage-json": "link:../../../dsh-monorepo/packages/storage/storage-json",
+    "@deepseek-ai/dsh-system-prompt": "link:../../../dsh-monorepo/packages/core/system-prompt",
+    "@deepseek-ai/dsh-tools": "link:../../../dsh-monorepo/packages/core/tools"
+  }
+}

@@ -1,0 +1,25 @@
+# 依赖与构建产物
+node_modules/
+dist/
+.unit-tmp/
+*.log
+*.err
+*.err.log
+
+# 运行数据与测试 home
+.test-data/
+*-dsh-home/
+run/
+run-fullaccess-evidence/
+_backup/
+.cross-turn-archive/
+
+# 凭证
+.credentials*
+settings*.yaml
+settings*.local.yaml
+.anonymous-user-id
+
+# 环境
+.env
+.env.*

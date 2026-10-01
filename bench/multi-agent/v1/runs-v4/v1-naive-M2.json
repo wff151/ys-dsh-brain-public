@@ -1,0 +1,148 @@
+{
+  "trace_id": "v1-naive-M2",
+  "prompt_version": "naive",
+  "task": "M2",
+  "category": "多轮动态",
+  "judge": "adaptation",
+  "stages": [
+    {
+      "stage": 1,
+      "input": "一周内将旧库（MySQL 5.7，4TB）迁移至新库（MySQL 8.0）。给出迁移方案与理由。",
+      "output": "处理方式：按生产数据库迁移流程给出可执行方案，优先保证数据一致性、切换窗口可控、可回滚。\n\n## 推荐迁移方案\n\n### 1. 总体路线\n\n采用：\n\n> 新 MySQL 8.0 实例 + XtraBackup 全量备份恢复 + GTID 增量复制 + 数据校验 + 冻结写入切换\n\n不推荐直接使用 `mysqldump` 迁移 4TB 数据，原因是：\n\n- 4TB 数据量较大，`mysqldump` 速度慢。\n- 对大表容易产生长时间锁或高 IO 压力。\n- 恢复和校验耗时不可控。\n- 对生产切换窗口风险较高。\n\nXtraBackup 或 MySQL Enterprise Backup 更适合：\n\n- 支持热备。\n- 锁表时间短。\n- 支持压缩、流式备份。\n- 恢复速度快。\n- 适合 4TB 级别数据迁移。\n\n---\n\n## 2. 迁移前准备\n\n### 2.1 盘点旧库\n\n需要确认：\n\n- 数据库列表。\n- 表大小。\n- 总数据量，确认约 4TB。\n- 字符集和排序规则。\n- 存储过程、函数、触发器、视图。\n- 用户权限。\n- 应用连接串。\n- 长事务。\n- 大表。\n- binlog 空间。\n- 是否有在线 DDL。\n- 是否有跨库调用。\n- 是否有外部程序直接读写数据库。\n\n重点检查：\n\n- 是否有超大表，例如单表超过 100GB。\n- 是否有长事务，例如几分钟甚至更久。\n- 是否有频繁写入表。\n- 是否有应用直接依赖 MySQL 5.7 特有行为。\n\n---\n\n### 2.2 兼容性检查\n\nMySQL 5.7 到 MySQL 8.0 存在兼容性差异，需要提前测试。\n\n重点检查：\n\n#### 字符集\n\nMySQL 8.0 默认字符集为 `utf8mb4`，默认排序规则为 `utf8mb4_0900_ai_ci`。\n\n如果旧库使用：\n\n- `utf8`\n- `latin1`\n- `utf8mb4_general_ci`\n- 其他排序规则\n\n需要在迁移前确认新库配置。\n\n建议新库显式配置：\n\n```ini\ncharacter_set_server = utf8mb4\ncollation_server = utf8mb4_0900_ai_ci\n```\n\n如果业务对排序规则敏感，需要测试。\n\n---\n\n#### SQL Mode\n\nMySQL 8.0 默认开启：\n\n```ini\nsql_mode = ONLY_FULL_GROUP_BY\n```\n\n这可能导致旧 SQL 报错。\n\n需要检查：\n\n- `GROUP BY` 是否完整。\n- 聚合函数是否覆盖所有非聚合列。\n- 旧 SQL 是否依赖宽松模式。\n\n建议在新测试库中跑核心 SQL。\n\n---\n\n#### 认证插件\n\nMySQL 8.0 默认认证插件为：\n\n```ini\ncaching_sha2_password\n```\n\nMySQL 5.7 常见为：\n\n```ini\nmysql_native_password\n```\n\n如果应用客户端较老，可能不兼容 `caching_sha2_password`。\n\n需要确认：\n\n- 应用驱动版本。\n- 连接池版本。\n- 是否支持 `caching_sha2_password`。\n- 是否需要临时兼容旧认证插件。\n\n---\n\n#### 存储过程、触发器、视图\n\nMySQL 8.0 对部分语法更严格。\n\n需要检查：\n\n- 存储过程是否使用旧语法。\n- 触发器是否依赖旧行为。\n- 视图是否包含不兼容函数。\n- 是否使用被移除或变更的函数。\n\n---\n\n#### 时区\n\n检查：\n\n- 旧库时区。\n- 新库时区。\n- 应用是否依赖数据库时区。\n- 时间字段是否存储本地时间或 UTC。\n\n建议统一使用 UTC，或保持与旧库一致。\n\n---\n\n### 2.3 新 MySQL 8.0 环境准备\n\n新库建议：\n\n- 同架构或更高规格。\n- 足够 CPU、内存、IO。\n- 使用 SSD/NVMe。\n- 网络带宽足够。\n- 与旧库同机房或低延迟网络。\n- 配置 binlog。\n- 配置 GTID。\n- 配置复制账号。\n\n建议新库配置：\n\n```ini\nserver_id = 8001\nlog_bin = /var/log/mysql/mysql-bin\nbinlog_format = ROW\nbinlog_row_image = FULL\ngtid_mode = ON\nenforce_gtid_consistency = ON\ncharacter_set_server = utf8mb4\ncollation_server = utf8mb4_0900_ai_ci\nmax_allowed_packet = 64M\n```\n\n如果旧库最大包较大，需要调整 `max_allowed_packet`。\n\n---\n\n## 3. 旧库开启 GTID 复制\n\n如果旧库 MySQL 5.7 支持 GTID，建议开启 GTID。\n\n旧库配置：\n\n```ini\nserver_id = 5001\nlog_bin = /var/log/mysql/mysql-bin\nbinlog_format = ROW\nbinlog_row_image = FULL\ngtid_mode = ON\nenforce_gtid_consistency = ON\n```\n\n开启后确认：\n\n```sql\nSHOW VARIABLES LIKE 'gtid_mode';\nSHOW VARIABLES LIKE 'enforce_gtid_consistency';\nSHOW VARIABLES LIKE 'binlog_format';\n```\n\n预期：\n\n```text\ngtid_mode = ON\nenforce_gtid_consistency = ON\nbinlog_format = ROW\n```\n\n如果旧库版本较老，不支持 GTID，则使用 binlog 文件位置复制。\n\n---\n\n## 4. 全量迁移\n\n### 4.1 使用 XtraBackup 备份旧库\n\n推荐工具：\n\n- Percona XtraBackup\n- MySQL Enterprise Backup\n\n以 Percona XtraBackup 为例。\n\n备份思路：\n\n1. 在旧库上执行 XtraBackup。\n2. 备份到本地或对象存储。\n3. 将备份传输到新 MySQL 8.0 实例。\n4. 在新实例上恢复。\n\n示例命令：\n\n```bash\nxtrabackup \\\n  --backup \\\n  --target-dir=/backup/mysql57 \\\n  --source-host=old-mysql \\\n  --source-user=backup_user \\\n  --source-password=xxxx \\\n  --backup-method=stream \\\n  --compress \\\n  --parallel=4\n```\n\n说明：\n\n- `--backup-method=stream` 适合跨机器传输。\n- `--compress` 可节省网络和存储。\n- `--parallel` 根据 CPU 和 IO 调整。\n\n备份完成后记录：\n\n- 备份开始时间。\n- 备份结束时间。\n- 备份文件位置。\n- 备份大小。\n- 备份点 GTID。\n- 备份点 binlog 文件。\n- 备份点 binlog 位置。\n\n---\n\n### 4.2 传输备份到新库\n\n4TB 数据量传输时间取决于网络带宽。\n\n参考：\n\n| 网络带宽 | 理论传输时间 |\n|---|---:|\n| 1 Gbps | 约 33 小时 |\n| 10 Gbps | 约 3.3 小时 |\n| 25 Gbps | 约 1.3 小时 |\n\n如果带宽不足，需要：\n\n- 提前开始备份。\n- 使用压缩。\n- 使用对象存储传输。\n- 使用同机房网络。\n- 使用多副本并行传输。\n\n如果一周内带宽不足，需要评估是否调整方案，例如：\n\n- 先迁移核心库。\n- 使用云厂商跨区复制。\n- 使用专用链路。\n- 分批次迁移。\n\n---\n\n### 4.3 在新 MySQL 8.0 上恢复\n\n恢复步骤：\n\n1. 准备新 MySQL 8.0 实例。\n2. 清空目标数据目录或准备干净实例。\n3. 恢复 XtraBackup。\n4. 启动 MySQL。\n5. 检查数据。\n\n示例：\n\n```bash\nxtrabackup \\\n  --prepare \\\n  --target-dir=/backup/mysql57\n\nxtrabackup \\\n  --copy-back \\\n  --target-dir=/backup/mysql57 \\\n  --source-host=new-mysql \\\n  --source-user=restore_user \\\n  --source-password=xxxx\n```\n\n恢复后检查：\n\n```sql\nSELECT VERSION();\nSHOW VARIABLES LIKE 'character_set_server';\nSHOW VARIABLES LIKE 'collation_server';\nSHOW VARIABLES LIKE 'gtid_mode';\nSHOW VARIABLES LIKE 'enforce_gtid_consistency';\n```\n\n---\n\n## 5. 增量同步\n\n全量恢复完成后，新库数据只到备份点。\n\n需要继续同步旧库后续写入。\n\n### 5.1 在新库配置复制\n\n在新 MySQL 8.0 上执行：\n\n```sql\nCHANGE MASTER TO\n  SOURCE_HOST='old-mysql',\n  SOURCE_USER='repl_user',\n  SOURCE_PASSWORD='xxxx',\n  SOURCE_AUTO_POSITION=1;\n\nSTART SLAVE;\n```\n\n如果旧库不支持 GTID，则使用 binlog 位置：\n\n```sql\nCHANGE MASTER TO\n  SOURCE_HOST='old-mysql',\n  SOURCE_USER='repl_user',\n  SOURCE_PASSWORD='xxxx',\n  SOURCE_LOG_FILE='mysql-bin.000001',\n  SOURCE_LOG_POS=123456;\n\nSTART SLAVE;\n```\n\n### 5.2 检查复制状态\n\n```sql\nSHOW SLAVE STATUS\\G\n```\n\n重点检查：\n\n- `Slave_IO_Running: Yes`\n- `Slave_SQL_Running: Yes`\n- `Seconds_Behind_Source: 0`\n- `Last_Gtid`\n- `Executed_Gtid`\n- `Last_Error`\n\n如果延迟较大，需要观察：\n\n- 旧库写入量。\n- 新库 IO 能力。\n- 网络带宽。\n- 是否存在大事务。\n- 是否存在大表更新。\n- 是否存在锁等待。\n\n---\n\n## 6. 数据校验\n\n复制追平后，需要校验数据一致性。\n\n### 6.1 复制层校验\n\n确认：\n\n```sql\nSHOW SLAVE STATUS\\G\n```\n\n要求：\n\n- IO 线程正常。\n- SQL 线程正常。\n- 延迟为 0。\n- GTID 一致。\n- 无错误。\n\n---\n\n### 6.2 表级校验\n\n对关键表做校验。\n\n可以使用：\n\n- `CHECKSUM TABLE`\n- `pt-table-checksum`\n- 应用层校验\n- 行数校验\n- 关键业务字段校验\n\n示例：\n\n```sql\nCHECKSUM TABLE db1.table1;\n```\n\n对 4TB 库不建议盲目全库校验，因为耗时较长。\n\n建议分层校验：\n\n#### 核心表\n\n必须校验：\n\n- 用户表。\n- 订单表。\n- 支付表。\n- 商品表。\n- 库存表。\n- 账户表。\n- 日志表。\n\n#### 非核心表\n\n抽样校验：\n\n- 行数。\n- 最大 ID。\n- 最近更新时间。\n- 关键业务字段。\n\n#### 全库校验\n\n如果时间允许，可以全库校验，但需要评估耗时。\n\n---\n\n### 6.3 应用层校验\n\n切换前必须跑应用冒烟测试：\n\n- 登录。\n- 核心查询。\n- 核心写入。\n- 报表查询。\n- 支付流程。\n- 库存扣减。\n- 消息通知。\n- 定时任务。\n\n重点验证：\n\n- 查询结果一致。\n- 写入成功。\n- 事务正常。\n- 无 SQL 报错。\n- 无字符集乱码。\n- 无时区偏差。\n\n---\n\n## 7. 切换方案\n\n### 7.1 切换前冻结写入\n\n切换窗口内，旧库需要停止写入。\n\n方式：\n\n#### 方式一：应用层冻结\n\n推荐。\n\n应用层关闭写接口：\n\n- 下单。\n- 支付。\n- 库存变更。\n- 用户注册。\n- 数据导入。\n- 定时任务。\n\n只保留读。\n\n#### 方式二：数据库只读\n\n旧库设置只读：\n\n```sql\nSET GLOBAL read_only = ON;\n```\n\n注意：\n\n- 需要 root 或高权限账号。\n- 需要确认是否有后台任务继续写入。\n- 需要确认是否有外部程序直连。\n\n---\n\n### 7.2 等待复制延迟为 0\n\n冻结写入后，等待：\n\n```sql\nSHOW SLAVE STATUS\\G\n```\n\n确认：\n\n```text\nSeconds_Behind_Source = 0\n```\n\n如果延迟不为 0，需要继续等待。\n\n---\n\n### 7.3 切换应用连接\n\n确认复制延迟为 0 后，切换应用连接。\n\n切换方式：\n\n- 修改应用配置。\n- 修改 DNS。\n- 修改负载均衡。\n- 修改连接池。\n- 修改服务发现。\n\n切换后验证：\n\n- 应用能连接新库。\n- 核心查询正常。\n- 核心写入正常。\n- 事务正常。\n- 无 SQL 报错。\n- 无数据乱码。\n- 无时区问题。\n\n---\n\n### 7.4 切换后观察\n\n切换后观察：\n\n- 新库 CPU。\n- 新库内存。\n- 新库 IO。\n- 新库连接数。\n- 慢查询。\n- 锁等待。\n- 复制状态。\n- 应用错误日志。\n- 业务指标。\n\n建议观察至少：\n\n- 15 分钟。\n- 1 小时。\n- 核心业务高峰。\n\n---\n\n## 8. 回滚方案\n\n### 8.1 回滚条件\n\n出现以下情况需要回滚：\n\n- 新库数据校验失败。\n- 应用核心功能异常。\n- 新库性能不可接受。\n- 复制延迟无法追平。\n- 出现大量 SQL 报错。\n- 出现数据不一致。\n- 业务不可接受。\n\n---\n\n### 8.2 回滚步骤\n\n如果切换后新库尚未写入，或写入量很小：\n\n1. 应用切回旧库。\n2. 旧库恢复写入。\n3. 新库停止复制。\n4. 保留新库作为排查环境。\n\n如果新库已经写入：\n\n需要评估：\n\n- 新库新增数据量。\n- 是否可接受丢失。\n- 是否需要反向同步。\n- 是否需要人工合并。\n\n因此建议：\n\n> 切换窗口尽量短。  \n> 切换前冻结写入。  \n> 切换后先验证再开放写入。\n\n---\n\n## 9. 一周迁移计划\n\n### D-7：盘点与测试\n\n任务：\n\n- 盘点数据库。\n- 确认 4TB 数据量。\n- 确认表结构。\n- 确认应用依赖。\n- 搭建测试环境。\n- 测试 MySQL 8.0 兼容性。\n- 测试核心 SQL。\n- 测试应用连接。\n\n产出：\n\n- 数据库清单。\n- 兼容性风险清单。\n- 迁移方案。\n- 回滚方案。\n\n---\n\n### D-6：环境准备\n\n任务：\n\n- 搭建 MySQL 8.0 实例。\n- 配置 binlog。\n- 配置 GTID。\n- 配置复制账号。\n- 安装 XtraBackup。\n- 测试备份工具。\n- 测试网络带宽。\n\n产出：\n\n- 新库环境可用。\n- 备份工具可用。\n- 复制账号可用。\n\n---\n\n### D-5：全量备份演练\n\n任务：\n\n- 在测试库或旧库低峰期做全量备份。\n- 测试恢复时间。\n- 测试传输时间。\n- 测试新库恢复时间。\n- 记录备份点。\n\n产出：\n\n- 全量备份耗时。\n- 全量恢复耗时。\n- 网络传输耗时。\n- 备份点记录。\n\n---\n\n### D-4：增量复制演练\n\n任务：\n\n- 配置 GTID 复制。\n- 观察复制延迟。\n- 测试大事务影响。\n- 测试长事务影响。\n- 测试复制中断恢复。\n\n产出：\n\n- 复制延迟。\n- 复制稳定性。\n- 异常处理方案。\n\n---\n\n### D-3：校验与回滚演练\n\n任务：\n\n- 数据校验。\n- 应用冒烟测试。\n- 回滚演练。\n- 确认切换脚本。\n- 确认 DNS/负载均衡切换方式。\n- 确认监控告警。\n\n产出：\n\n- 校验结果。\n- 回滚演练结果。\n- 切换 checklist。\n\n---\n\n### D-2：冻结窗口确认\n\n任务：\n\n- 确认切换时间。\n- 通知业务方。\n- 确认写接口冻结方式。\n- 确认定时任务暂停。\n- 确认外部程序暂停。\n- 确认旧库 binlog 空间。\n- 确认新库资源。\n\n产出：\n\n- 切换时间。\n- 冻结范围。\n- 责任人。\n- 回滚责任人。\n\n---\n\n### D-1：预切换\n\n任务：\n\n- 旧库开启只读或应用层冻结。\n- 等待复制延迟为 0。\n- 新库校验。\n- 应用切到只读模式。\n- 验证新库查询。\n- 不开放写入。\n\n产出：\n\n- 复制延迟为 0。\n- 新库查询正常。\n- 数据校验通过。\n\n---\n\n### D-0：正式切换\n\n任务：\n\n- 冻结写入。\n- 等待复制延迟为 0。\n- 切换应用连接。\n- 开放写入。\n- 验证核心业务。\n- 观察监控。\n- 确认无异常。\n\n产出：\n\n- 正式切换完成。\n- 新库承载业务。\n- 旧库进入只读或保留期。\n\n---\n\n## 10. 关键风险与应对\n\n### 10.1 网络带宽不足\n\n风险：\n\n- 4TB 备份传输超时。\n- 复制延迟无法追平。\n\n应对：\n\n- 提前开始备份。\n- 使用压缩。\n- 使用同机房网络。\n- 使用对象存储。\n- 使用专用链路。\n- 分批次迁移。\n\n---\n\n### 10.2 旧库写入量大\n\n风险：\n\n- 复制延迟高。\n- 切换窗口拉长。\n\n应对：\n\n- 冻结写入。\n- 暂停非核心任务。\n- 暂停大事务。\n- 降低写入峰值。\n- 提前观察延迟。\n\n---\n\n### 10.3 兼容性报错\n\n风险：\n\n- 应用 SQL 在新库报错。\n- 存储过程执行失败。\n- 字符集异常。\n\n应对：\n\n- 提前测试。\n- 修复 SQL。\n- 调整 SQL Mode。\n- 调整字符集。\n- 调整认证插件。\n- 调整时区。\n\n---\n\n### 10.4 新库性能不足\n\n风险：\n\n- 查询变慢。\n- 写入变慢。\n- 连接数不足。\n\n应对：\n\n- 新库规格不低于旧库。\n- 提前压测。\n- 调整 buffer pool。\n- 调整连接数。\n- 调整慢查询。\n- 必要时扩容。\n\n---\n\n### 10.5 切换失败\n\n风险：\n\n- 新库不可用。\n- 业务中断。\n- 数据不一致。\n\n应对：\n\n- 保留旧库。\n- 旧库恢复写入。\n- 应用切回旧库。\n- 新库保留排查。\n- 复盘原因。\n\n---\n\n## 11. 推荐最终方案\n\n最终推荐：\n\n1. 新建 MySQL 8.0 实例。\n2. 旧库开启 GTID 和 ROW binlog。\n3. 使用 XtraBackup 做全量备份。\n4. 备份传输到新 MySQL 8.0 实例。\n5. 在新实例恢复数据。\n6. 配置 GTID 增量复制。\n7. 追平复制延迟。\n8. 对核心表做数据校验。\n9. 应用层冻结写入。\n10. 等待复制延迟为 0。\n11. 切换应用连接。\n12. 验证核心业务。\n13. 开放写入。\n14. 旧库保留只读一段时间。\n15. 观察稳定后下线旧库。\n\n## 12. 选择该方案的理由\n\n### 12.1 适合 4TB 数据量\n\n4TB 数据量较大，`mysqldump` 不适合生产迁移。\n\nXtraBackup 更适合：\n\n- 热备。\n- 低锁。\n- 高恢复速度。\n- 支持压缩。\n- 支持流式传输。\n\n---\n\n### 12.2 数据一致性可控\n\nGTID 复制比 binlog 位置复制更可靠。\n\n优点：\n\n- 自动定位复制点。\n- 支持故障恢复。\n- 支持多从库。\n- 支持复制中断后恢复。\n- 便于确认数据追平。\n\n---\n\n### 12.3 切换窗口可控\n\n通过提前全量恢复和增量复制，可以提前完成大部分数据同步。\n\n切换窗口只需要：\n\n- 冻结写入。\n- 等待延迟为 0。\n- 切换连接。\n- 验证业务。\n\n这样可以缩短停机时间。\n\n---\n\n### 12.4 可回滚\n\n旧库保留只读或保留一段时间，可以支持回滚。\n\n如果新库出现问题：\n\n- 应用切回旧库。\n- 旧库恢复写入。\n- 新库保留排查。\n\n这比原地升级更安全。\n\n---\n\n### 12.5 风险可提前暴露\n\n通过兼容性测试、复制演练、数据校验、回滚演练，可以提前发现：\n\n- SQL 不兼容。\n- 字符集问题。\n- 认证插件问题。\n- 网络带宽不足。\n- 复制延迟。\n- 新库性能不足。\n- 应用连接问题。\n\n这样可以降低正式切换风险。\n\n{\"memory_writes\":[{\"tool\":\"remember\",\"params\":{\"goal\":\"完成 MySQL 5.7 4TB 到 MySQL 8.0 的一周迁移方案\",\"issues\":[\"4TB 数据量大，全量备份和增量同步耗时\",\"5.7 到 8.0 存在兼容性差异\",\"切换窗口需要控制写入和复制延迟\"],\"result\":\"采用 XtraBackup 全量恢复 + GTID 增量复制 + 校验 + 冻结切换，并保留旧库回滚\",\"tags\":[\"mysql\",\"migration\",\"gtid\",\"xtrabackup\"]}}]}",
+      "memory_writes": [
+        {
+          "tool": "remember",
+          "params": {
+            "goal": "完成 MySQL 5.7 4TB 到 MySQL 8.0 的一周迁移方案",
+            "issues": [
+              "4TB 数据量大，全量备份和增量同步耗时",
+              "5.7 到 8.0 存在兼容性差异",
+              "切换窗口需要控制写入和复制延迟"
+            ],
+            "result": "采用 XtraBackup 全量恢复 + GTID 增量复制 + 校验 + 冻结切换，并保留旧库回滚",
+            "tags": [
+              "mysql",
+              "migration",
+              "gtid",
+              "xtrabackup"
+            ]
+          }
+        }
+      ],
+      "formatOk": true
+    },
+    {
+      "stage": 2,
+      "input": "运维反馈：旧库部分表存在重复订单号、空字段；备份周期为每周一次，上周备份因磁盘满失败，最近一次完整备份为 3 周前。先查看上一阶段的记录与未解决问题，再给出调整后的方案与理由。",
+      "output": "处理方式：\n\n1. 先核对上一阶段记录：当前上下文未附带阶段 1 的目标、结果和未解决问题清单，也无法访问外部记录，因此以你给出的“阶段 1 已确定一周内直接全量迁移”和运维反馈作为输入。\n2. 基于现有信息判断：旧库存在重复订单号、空字段，且最近一次完整备份为 3 周前、上周备份失败，直接全量迁移的风险较高。\n\n调整后的方案：\n\n1. 保留“一周内全量迁移”的时间目标，但增加前置门禁：\n   - 完成旧库数据盘点与清洗；\n   - 完成一次完整备份并验证可恢复；\n   - 完成回滚路径演练或至少确认旧库可保留、可切回。\n\n2. 立即处理事项：\n   - 对旧库各表盘点重复订单号，记录表名、字段、重复行数、业务影响；\n   - 对空字段盘点字段名、空值行数、是否影响唯一键、支付、履约、报表；\n   - 对关键表先冻结写入或安排低峰窗口；\n   - 立即执行一次完整备份，并验证备份可恢复；\n   - 清理磁盘空间，设置备份失败告警。\n\n3. 数据清洗规则：\n   - 重复订单号按业务规则处理：保留最新、合并状态、隔离待人工确认；\n   - 空字段按字段类型处理：补默认值、标记待补、或迁移时单独隔离；\n   - 生成清洗前、清洗后数据快照，便于回滚和审计。\n\n4. 迁移执行：\n   - 目标库先完成表结构、索引、约束、权限准备；\n   - 先迁移历史数据，再同步增量数据；\n   - 迁移后校验行数、唯一键、重复订单号、空字段、关键业务指标；\n   - 低峰窗口切换，旧库保留只读或可切回状态；\n   - 切换后观察一个完整业务周期，或至少 24 到 72 小时。\n\n5. 若无法在一周内完成备份验证或数据清洗：\n   - 延期全量迁移；\n   - 或改为分批迁移：先非核心表、读副本、报表表，再核心业务表；\n   - 避免在备份不可验证、数据质量未确认的情况下直接切换。\n\n理由：\n\n1. 重复订单号可能导致唯一键冲突、重复计费、重复履约、报表失真。\n2. 空字段可能导致下游校验失败、统计缺失、迁移后数据不可用。\n3. 最近一次完整备份为 3 周前，且上周备份失败，说明回滚窗口不足，迁移失败后恢复风险较高。\n4. 将数据清洗和备份验证前置，可以把风险控制在迁移前，而不是迁移后。\n\n{\"memory_writes\":[{\"tool\":\"note\",\"params\":{\"goal\":\"调整一周内全量迁移方案，降低数据质量与备份风险\",\"issues\":[\"旧库部分表存在重复订单号\",\"旧库部分字段为空\",\"上周备份因磁盘满失败\",\"最近一次完整备份为3周前\",\"上一阶段记录未在当前上下文提供\"],\"result\":\"建议将全量迁移前置数据清洗、备份验证和回滚演练；若无法在一周内完成则延期或分批迁移\",\"tags\":[\"迁移\",\"数据质量\",\"备份\",\"回滚\",\"阶段1\"]}}]}",
+      "memory_writes": [
+        {
+          "tool": "note",
+          "params": {
+            "goal": "调整一周内全量迁移方案，降低数据质量与备份风险",
+            "issues": [
+              "旧库部分表存在重复订单号",
+              "旧库部分字段为空",
+              "上周备份因磁盘满失败",
+              "最近一次完整备份为3周前",
+              "上一阶段记录未在当前上下文提供"
+            ],
+            "result": "建议将全量迁移前置数据清洗、备份验证和回滚演练；若无法在一周内完成则延期或分批迁移",
+            "tags": [
+              "迁移",
+              "数据质量",
+              "备份",
+              "回滚",
+              "阶段1"
+            ]
+          }
+        }
+      ],
+      "formatOk": true
+    }
+  ],
+  "injected_change": {
+    "stage": 2,
+    "change": "旧库脏数据 + 备份链不可信（模型需自推\"无可信备份\"）"
+  },
+  "blackboard_writes": [
+    {
+      "tool": "remember",
+      "params": {
+        "goal": "完成 MySQL 5.7 4TB 到 MySQL 8.0 的一周迁移方案",
+        "issues": [
+          "4TB 数据量大，全量备份和增量同步耗时",
+          "5.7 到 8.0 存在兼容性差异",
+          "切换窗口需要控制写入和复制延迟"
+        ],
+        "result": "采用 XtraBackup 全量恢复 + GTID 增量复制 + 校验 + 冻结切换，并保留旧库回滚",
+        "tags": [
+          "mysql",
+          "migration",
+          "gtid",
+          "xtrabackup"
+        ]
+      }
+    },
+    {
+      "tool": "note",
+      "params": {
+        "goal": "调整一周内全量迁移方案，降低数据质量与备份风险",
+        "issues": [
+          "旧库部分表存在重复订单号",
+          "旧库部分字段为空",
+          "上周备份因磁盘满失败",
+          "最近一次完整备份为3周前",
+          "上一阶段记录未在当前上下文提供"
+        ],
+        "result": "建议将全量迁移前置数据清洗、备份验证和回滚演练；若无法在一周内完成则延期或分批迁移",
+        "tags": [
+          "迁移",
+          "数据质量",
+          "备份",
+          "回滚",
+          "阶段1"
+        ]
+      }
+    }
+  ],
+  "folded": {
+    "goal": "调整一周内全量迁移方案，降低数据质量与备份风险",
+    "issues": [
+      "4TB 数据量大，全量备份和增量同步耗时",
+      "5.7 到 8.0 存在兼容性差异",
+      "切换窗口需要控制写入和复制延迟",
+      "旧库部分表存在重复订单号",
+      "旧库部分字段为空",
+      "上周备份因磁盘满失败",
+      "最近一次完整备份为3周前",
+      "上一阶段记录未在当前上下文提供"
+    ],
+    "result": "建议将全量迁移前置数据清洗、备份验证和回滚演练；若无法在一周内完成则延期或分批迁移",
+    "tags": [
+      "mysql",
+      "migration",
+      "gtid",
+      "xtrabackup",
+      "迁移",
+      "数据质量",
+      "备份",
+      "回滚",
+      "阶段1"
+    ]
+  },
+  "resume_readback": {
+    "found": false,
+    "unresolved": [],
+    "brief": ""
+  },
+  "public_readback": {
+    "found": false,
+    "unresolved": []
+  },
+  "verdict": {
+    "adaptation": null,
+    "blackboard_ok": null,
+    "notes": ""
+  }
+}

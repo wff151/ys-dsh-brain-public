@@ -1,0 +1,90 @@
+# dsh-brain-bundle patch
+#
+# Additive only: inserts four Cordis function-plugins (shipped inline under
+# ./dist) on top of whatever the profile already runs. It never edits a dsh
+# file; toggling either row off (Plugin Manager UI / dsh plugin disable) fully
+# reverts that layer. Rows are addressable by id, so later dsh upgrades that
+# reinstall this bundle keep the same ids and user overrides.
+#
+# Row order has no load semantics; activation is service-availability driven.
+
+- insert:
+    # ① Memory system: three layers (short/public/profile) + portable docs,
+    #    retrieval trio, decay, auto-record, reflection, failure fingerprints,
+    #    retrieval budget. Vector semantic retrieval ships OFF by default and
+    #    transparently falls back to keywords until an OpenAI-compatible
+    #    /embeddings endpoint is configured (embedding.* below).
+    - id: dsh-brain-memory
+      name: './dist/memory.mjs'
+      config:
+        # dispatcher (default): registers NO brain_memory_* tools itself; the
+        # capabilities live on the brainMemory service for dsh-brain-dispatch.
+        toolMode: dispatcher
+        injectContext: true
+        decayIntervalHours: 6
+        reflectionIntervalHours: 24
+        embedding:
+          enabled: false
+        autoRecord:
+          short: true
+          long: true
+          # Notebook updated by the model at key moments (brain action=note),
+          # not appended on every user message.
+          portable: false
+
+    # ③ Execution philosophy: 道天地将法 conduct + attention nesting injected
+    #    through agent/pre-step. standaloneTool=false: contradiction is reached
+    #    via brain action=contradiction from the dispatcher below, so no extra
+    #    standalone tool schema is loaded.
+    - id: dsh-brain-conduct
+      name: './dist/conduct.mjs'
+      config:
+        standaloneTool: false
+
+    # Single-entry dispatcher: the ONLY model-facing brain tool. Registers one
+    # `brain` tool whose action routes to the memory capabilities plus conduct's
+    # contradiction analysis. Activation waits on (tools, brainMemory), so it
+    # always loads after the memory facility regardless of row position.
+    - id: dsh-brain-dispatch
+      name: './dist/dispatch.mjs'
+      config: {}
+
+    # ② Model-facing memory confinement (Stage 7): mounts ONLY while the memory
+    #    facility is active. The gate waits on (tools, brainMemory); disabling
+    #    the dsh-brain-memory row above unregisters that service, which flips
+    #    the gate INACTIVE and withdraws the guard — no standalone guard without
+    #    memory, no activation-order dependence. Same dshHome/logAllow config
+    #    surface as the standalone plugin (defaults: env/$HOME resolution, audit
+    #    off unless DSH_CONFINEMENT_AUDIT is set).
+    - id: dsh-brain-confinement
+      name: './dist/gate.mjs'
+      config: {}
+
+# ④ Autonomous-programming preset (programmer).
+#
+# The preset assets are plain files shipped inside THIS bundle under
+# ./presets; agent presets are not Cordis plugins, so they are exposed by
+# adding one extra read-only `system` preset root to the host's
+# @deepseek-ai/dsh-agent-presets service. That service is mounted only by the
+# web product; in the base/headless profiles the id below does not exist and
+# the loader warns-and-skips this override, leaving ①③ fully live.
+#
+# This id-targeted override REPLACES the `config` object wholesale (loader
+# patch semantics are shallow per key), so the host's `default: standard` is
+# restated here. The shipped and user roots stay enabled explicitly; our root
+# is appended, never replacing the built-in standard/ptc/cordis/minimal presets.
+# Selecting nothing keeps `standard`, so this is opt-in and fully reversible.
+#
+# Root path: discovery resolves relative roots against process.cwd(), which is
+# unreliable, so an absolute path is required. The default is this bundle's
+# install location on this machine; set DSH_BRAIN_PRESET_ROOT to override it
+# after relocating the project (the same process.env ?? literal idiom the
+# official github-review preset uses).
+- id: agent-presets
+  config:
+    default: standard
+    includeShippedRoot: true
+    includeUserRoot: true
+    roots:
+      - path: !!js "process.env.DSH_BRAIN_PRESET_ROOT ?? 'packages/dsh-brain-bundle/presets'"
+        trust: system

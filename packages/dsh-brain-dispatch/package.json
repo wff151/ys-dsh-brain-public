@@ -1,0 +1,23 @@
+{
+  "name": "dsh-brain-dispatch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Single-entry dispatcher for the dsh brain plugins: exposes one lightweight `brain` tool and routes action -> memory/conduct capability, keeping the full capability schemas out of every model request. Cordis function-plugin, bundled by dsh-brain-bundle.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-agent": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-tools": "0.1.6-alpha.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "link:../../../dsh-monorepo/vendor/cordis",
+    "@deepseek-ai/schemastery": "link:../../../dsh-monorepo/vendor/schemastery",
+    "@deepseek-ai/dsh-agent": "link:../../../dsh-monorepo/packages/core/agent",
+    "@deepseek-ai/dsh-tools": "link:../../../dsh-monorepo/packages/core/tools",
+    "dsh-brain-conduct": "link:../dsh-conduct",
+    "dsh-brain-memory": "link:../dsh-memory"
+  }
+}

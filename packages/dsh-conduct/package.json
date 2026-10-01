@@ -1,0 +1,26 @@
+{
+  "name": "dsh-brain-conduct",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Execution-philosophy layer for dsh 0.1.6: 道天地将法 conduct + attention nesting injected through agent/pre-step, plus the 矛盾分析 guidance tool. Cordis function-plugin, bundled by dsh-brain-bundle.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx/esm tests/run-all.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-agent": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-tools": "0.1.6-alpha.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "link:../../../dsh-monorepo/vendor/cordis",
+    "@deepseek-ai/schemastery": "link:../../../dsh-monorepo/vendor/schemastery",
+    "@deepseek-ai/dsh-agent": "link:../../../dsh-monorepo/packages/core/agent",
+    "@deepseek-ai/dsh-invariants": "link:../../../dsh-monorepo/packages/runtime-diagnostics/invariants",
+    "@deepseek-ai/dsh-session-projection": "link:../../../dsh-monorepo/packages/session/session-projection",
+    "@deepseek-ai/dsh-system-prompt": "link:../../../dsh-monorepo/packages/core/system-prompt",
+    "@deepseek-ai/dsh-tools": "link:../../../dsh-monorepo/packages/core/tools"
+  }
+}
