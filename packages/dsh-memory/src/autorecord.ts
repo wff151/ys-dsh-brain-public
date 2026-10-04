@@ -41,6 +41,20 @@ const SHORT_MAX_CHARS = 200
 const LONG_MAX_CHARS = 500
 const TITLE_MAX_CHARS = 40
 
+/** 归一化标题：去空白/标点/全半角统一，用于去重比较。 */
+function normalizeTitle(title: string): string {
+  return String(title ?? '')
+    .toLowerCase()
+    .replace(/[\s\u3000，。！？、；：""''（）【】《》.,!?;:()[\]{}'"<>-]+/g, '')
+}
+
+/** 提取标题：取首句（句号/换行前），≤40 字；空则退回前 40 字。 */
+function extractTitle(text: string): string {
+  const firstSentence = text.split(/[。！？\n]/)[0] ?? ''
+  const t = firstSentence.trim().slice(0, TITLE_MAX_CHARS)
+  return t !== '' ? t : text.slice(0, TITLE_MAX_CHARS)
+}
+
 /**
  * 把一次用户消息落入全部记忆层。
  * @param store - 打开的 memory store。
@@ -62,7 +76,7 @@ export async function autoRecordExchange(
   const trimmed = text.trim()
 
   if (short && trimmed !== '') {
-    await store.writeShortTerm('daily', trimmed.slice(0, SHORT_MAX_CHARS), ['auto-record'])
+    await store.writeShortTerm('daily', trimmed.slice(0, SHORT_MAX_CHARS), ['auto-record'], 1, 'fact')
   }
 
   if (portable && trimmed !== '') {
@@ -71,9 +85,17 @@ export async function autoRecordExchange(
 
   let longWritten = false
   if (long && trimmed.length >= longMinChars) {
-    const title = trimmed.slice(0, TITLE_MAX_CHARS)
+    const title = extractTitle(trimmed)
+    const norm = normalizeTitle(title)
     const recent = store.listPublicMemories('daily')
-    if (!recent.some(m => m.title === title)) {
+    // 去重：归一化标题相同，且内容长度高度接近（<20% 差）才算同一内容重复。
+    // 同前缀不同内容（标题相同但摘要差异大）不再被吞。
+    const dup = recent.some((m) => {
+      if (normalizeTitle(m.title) !== norm) return false
+      const len = Math.max(1, m.summary.length, trimmed.length)
+      return Math.abs(m.summary.length - trimmed.length) / len < 0.2
+    })
+    if (!dup) {
       const entry = await store.recordPublicMemory({
         mode: 'daily',
         title,

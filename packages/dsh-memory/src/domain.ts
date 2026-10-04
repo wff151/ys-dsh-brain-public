@@ -35,6 +35,12 @@ export const publicMemorySchema = z.object({
   unresolved: z.array(z.string()).default([]),
   result: z.string().default(''),
   source: z.string().default('manual'),
+  /** 关联任务 id（同一任务的多次记录可聚合，v2 可选）。 */
+  taskId: z.string().optional(),
+  /** 所属任务阶段（v2 可选）。 */
+  taskPhase: z.string().optional(),
+  /** 被检索/被引用计数（反馈回路：命中提权，v2 可选）。 */
+  refCount: z.number().optional(),
 })
 
 /** One short-term memory item (weighted, decaying). */
@@ -47,6 +53,29 @@ export const shortTermItemSchema = z.object({
   accessCount: z.number().default(0),
   createdAt: z.string(),
   lastAccess: z.string(),
+  // ── v2 可选字段（全部 optional，旧数据向后兼容）──
+  /** 条目类型：fact 事实 / state 当前状态 / event 变更事件 / task 任务上下文。缺省视为 fact。 */
+  kind: z.enum(['fact', 'state', 'event', 'task']).optional(),
+  /** kind=state: 状态键（如 beans_stock）；kind=task: 任务 id。 */
+  entityKey: z.string().optional(),
+  /** kind=state: 当前值描述（渲染投影用）；kind=task: 当前目标 goal。 */
+  entityValue: z.string().optional(),
+  /** kind=event: 幂等键（task_id + action + target + 参数归一化 hash）。 */
+  idempotencyKey: z.string().optional(),
+  /** kind=event: 执行状态 pending/success/failed。 */
+  eventStatus: z.enum(['pending', 'success', 'failed']).optional(),
+  /** 阶段标签 / 阶段摘要标签（阶段折叠用）。 */
+  phase: z.string().optional(),
+  /** 简洁摘要（事件摘要 / 任务待办摘要）。 */
+  summary: z.string().optional(),
+  /** 关联任务 id。 */
+  relatedTask: z.string().optional(),
+  /** 被检索/被引用计数（反馈回路，v2）。 */
+  refCount: z.number().optional(),
+  /** kind=state: 最后一次来源事件的 id（版本链）。 */
+  lastEventId: z.string().optional(),
+  /** kind=state: 有效期（小时），过期视为失效状态。 */
+  ttlHours: z.number().optional(),
 })
 
 /** Permanent user profile (user portrait). */
@@ -55,6 +84,12 @@ export const permanentProfileSchema = z.object({
   preferences: z.record(z.string(), z.unknown()).default({}),
   skills: z.array(z.string()).default([]),
   relationships: z.array(z.string()).default([]),
+  /**
+   * v2：画像字段的来源与时间戳（覆盖不丢历史）。
+   * 形如 { "preferences.喜欢": { value, updatedAt, sourceSession?, source: 'tool'|'auto' } }。
+   * 覆盖旧值时保留上一次来源记录在 sources 里（最多保留最近 3 条）。
+   */
+  sources: z.record(z.string(), z.unknown()).default({}),
 })
 
 /** One portable document (per-session working memory). */

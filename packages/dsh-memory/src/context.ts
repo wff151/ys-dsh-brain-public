@@ -16,6 +16,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type { MemoryStore } from './store.ts'
 import { renderRetrievedContext } from './retrieval.ts'
 import { findResumableSessions, renderResumeHint } from './resume.ts'
+import { renderShortTermProjection } from './state.ts'
 import type { MemoryMode } from './types.ts'
 
 /** Prompt-context order: after the harness identity, before tool guidance. */
@@ -70,6 +71,10 @@ export function renderMemoryContext(
     const hint = renderResumeHint(resumable.length)
     if (hint !== '') lines.push(hint)
   }
+  // v2：短期记忆投影（当前任务 + 当前状态 + 最近变更，预算内）。
+  // 事实条目不进投影——仍由检索（searchShortTerm）按需取回，防上下文膨胀。
+  const projection = renderShortTermProjection(store, 'daily', { maxStates: 3, maxEvents: 3 })
+  if (projection !== '') lines.push(projection)
   const profile = store.getPermanent('daily')
   const profileParts: string[] = []
   const attributes = Object.entries(profile.attributes)

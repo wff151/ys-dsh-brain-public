@@ -60,6 +60,7 @@ export { decayShortTerm, runShortTermDecay } from './decay.ts'
 export type { DecayOptions, DecayResult, DecaySummary } from './decay.ts'
 export { autoRecordExchange } from './autorecord.ts'
 export type { AutoRecordOptions } from './autorecord.ts'
+export { renderShortTermProjection, withIdempotency, idempotencyKeyOf } from './state.ts'
 export { countErrorFingerprints, maybeCreateProposals } from './evolution.ts'
 export type { EscalationOptions, EscalationResult } from './evolution.ts'
 export {

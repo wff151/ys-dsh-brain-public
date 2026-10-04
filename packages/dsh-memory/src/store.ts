@@ -88,6 +88,8 @@ export class MemoryStore {
     unresolved?: string[] | undefined
     result?: string | undefined
     source?: string | undefined
+    taskId?: string | undefined
+    taskPhase?: string | undefined
   }): Promise<PublicMemoryRecord> {
     const tables = this.requireTables()
     const now = new Date().toISOString()
@@ -103,6 +105,8 @@ export class MemoryStore {
       unresolved: input.unresolved ?? [],
       result: input.result ?? '',
       source: input.source ?? 'manual',
+      ...(input.taskId !== undefined ? { taskId: input.taskId } : {}),
+      ...(input.taskPhase !== undefined ? { taskPhase: input.taskPhase } : {}),
     }
     await tables.public.put(entry.memory_id, entry)
     await this.bumpCounter()
@@ -143,7 +147,13 @@ export class MemoryStore {
   }
 
   /** Write one short-term item; a duplicate content boosts its weight. */
-  async writeShortTerm(mode: MemoryMode, content: string, tags: string[] = [], weight = 1): Promise<ShortTermItemRecord> {
+  async writeShortTerm(
+    mode: MemoryMode,
+    content: string,
+    tags: string[] = [],
+    weight = 1,
+    kind?: 'fact' | 'state' | 'event' | 'task',
+  ): Promise<ShortTermItemRecord> {
     const tables = this.requireTables()
     const now = new Date().toISOString()
     const existing = [...tables.short.entries()]
@@ -169,6 +179,7 @@ export class MemoryStore {
       accessCount: 0,
       createdAt: now,
       lastAccess: now,
+      ...(kind !== undefined ? { kind } : {}),
     }
     await tables.short.put(item.id, item)
     await this.bumpCounter()
@@ -189,12 +200,214 @@ export class MemoryStore {
     }
   }
 
+  // ─── short-term v2: state / event / task context ────────────────────────
+  //
+  // 短期记忆从"消息副本"升级为"状态 + 事件 + 任务上下文"三层语义
+  // （见 IMPROVE 设计：短期记忆 v2）。全部复用 short 表，用可选字段
+  // kind/entityKey/idempotencyKey 等区分条目类型，旧数据向后兼容。
+
+  /** Upsert one state key (kind='state'); same key replaces value, keeps version chain. */
+  async upsertState(
+    mode: MemoryMode,
+    input: {
+      key: string
+      value: string
+      summary?: string | undefined
+      taskId?: string | undefined
+      ttlHours?: number | undefined
+      sourceEventId?: string | undefined
+    },
+  ): Promise<ShortTermItemRecord> {
+    const tables = this.requireTables()
+    const now = new Date().toISOString()
+    const existing = [...tables.short.entries()]
+      .map(([, item]) => item)
+      .find(item => item.mode === mode && item.kind === 'state' && item.entityKey === input.key)
+    if (existing !== undefined) {
+      const next: ShortTermItemRecord = {
+        ...existing,
+        entityValue: input.value,
+        summary: input.summary ?? existing.summary,
+        relatedTask: input.taskId ?? existing.relatedTask,
+        ...(input.ttlHours !== undefined ? { ttlHours: input.ttlHours } : {}),
+        ...(input.sourceEventId !== undefined ? { lastEventId: input.sourceEventId } : {}),
+        weight: Math.min(2, existing.weight + 0.1),
+        lastAccess: now,
+      }
+      await tables.short.put(existing.id, next)
+      await this.bumpCounter()
+      return next
+    }
+    const item: ShortTermItemRecord = {
+      id: genId('st'),
+      mode,
+      content: `${input.key}=${input.value}`,
+      tags: ['state'],
+      weight: 1,
+      accessCount: 0,
+      createdAt: now,
+      lastAccess: now,
+      kind: 'state',
+      entityKey: input.key,
+      entityValue: input.value,
+      ...(input.summary !== undefined ? { summary: input.summary } : {}),
+      ...(input.taskId !== undefined ? { relatedTask: input.taskId } : {}),
+      ...(input.ttlHours !== undefined ? { ttlHours: input.ttlHours } : {}),
+      ...(input.sourceEventId !== undefined ? { lastEventId: input.sourceEventId } : {}),
+    }
+    await tables.short.put(item.id, item)
+    await this.bumpCounter()
+    return item
+  }
+
+  /**
+   * Append one event (kind='event'), append-only. When `idempotencyKey` is set
+   * and a success event already exists, returns the existing entry (skipped)
+   * instead of writing a duplicate — the anti-rework guard.
+   */
+  async appendEvent(
+    mode: MemoryMode,
+    input: {
+      action: string
+      target?: string | undefined
+      before?: string | undefined
+      after?: string | undefined
+      idempotencyKey?: string | undefined
+      taskId?: string | undefined
+      summary?: string | undefined
+      status?: 'pending' | 'success' | 'failed' | undefined
+    },
+  ): Promise<{ item: ShortTermItemRecord; skipped: boolean }> {
+    const tables = this.requireTables()
+    const now = new Date().toISOString()
+    const status = input.status ?? 'success'
+    if (input.idempotencyKey !== undefined) {
+      const existing = this.checkIdempotent(mode, input.idempotencyKey)
+      if (existing !== undefined) return { item: existing, skipped: true }
+    }
+    const parts = [input.action, input.target].filter(Boolean)
+    const item: ShortTermItemRecord = {
+      id: genId('st'),
+      mode,
+      content: parts.join(' → '),
+      tags: ['event', ...(input.taskId !== undefined ? [input.taskId] : [])],
+      weight: 1,
+      accessCount: 0,
+      createdAt: now,
+      lastAccess: now,
+      kind: 'event',
+      ...(input.target !== undefined ? { entityKey: input.target } : {}),
+      ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
+      eventStatus: status,
+      ...(input.summary !== undefined ? { summary: input.summary } : {}),
+      ...(input.taskId !== undefined ? { relatedTask: input.taskId } : {}),
+    }
+    await tables.short.put(item.id, item)
+    await this.bumpCounter()
+    return { item, skipped: false }
+  }
+
+  /** Look up a success event by idempotency key (anti-rework). */
+  checkIdempotent(mode: MemoryMode, idempotencyKey: string): ShortTermItemRecord | undefined {
+    return [...this.requireTables().short.entries()]
+      .map(([, item]) => item)
+      .find(item => item.mode === mode && item.kind === 'event' && item.idempotencyKey === idempotencyKey && item.eventStatus === 'success')
+  }
+
+  /**
+   * Upsert one task-context entry (kind='task'). Structured fields carry the
+   * task's goal / phase / pending / completed / blocked state; `content` is the
+   * rendered projection the model reads (no JSON parsing on the hot path).
+   */
+  async updateTaskContext(
+    mode: MemoryMode,
+    taskId: string,
+    patch: {
+      goal?: string | undefined
+      phase?: string | undefined
+      pending?: string[] | undefined
+      completed?: string[] | undefined
+      blockedBy?: string[] | undefined
+    } = {},
+  ): Promise<ShortTermItemRecord> {
+    const tables = this.requireTables()
+    const now = new Date().toISOString()
+    const existing = [...tables.short.entries()]
+      .map(([, item]) => item)
+      .find(item => item.mode === mode && item.kind === 'task' && item.entityKey === taskId)
+    const base: ShortTermItemRecord = existing ?? {
+      id: genId('st'),
+      mode,
+      content: '',
+      tags: ['task-context'],
+      weight: 1,
+      accessCount: 0,
+      createdAt: now,
+      lastAccess: now,
+      kind: 'task',
+      entityKey: taskId,
+      entityValue: '',
+      phase: '',
+      summary: '',
+    }
+    const goal = patch.goal ?? base.entityValue ?? ''
+    const phase = patch.phase ?? base.phase ?? ''
+    const pending = patch.pending ?? []
+    const completed = patch.completed ?? []
+    const blockedBy = patch.blockedBy ?? []
+    const lines = [`目标：${goal || '未定'}`]
+    if (phase) lines.push(`阶段：${phase}`)
+    if (pending.length > 0) lines.push(`待办：${pending.join('、')}`)
+    if (completed.length > 0) lines.push(`已完成：${completed.join('、')}`)
+    if (blockedBy.length > 0) lines.push(`阻塞：${blockedBy.join('、')}`)
+    const next: ShortTermItemRecord = {
+      ...base,
+      content: lines.join(' | '),
+      entityValue: goal,
+      ...(phase !== '' ? { phase } : {}),
+      summary: `待办 ${pending.length} 项${blockedBy.length > 0 ? ` / 阻塞 ${blockedBy.length}` : ''}`,
+      weight: Math.min(2, base.weight + 0.1),
+      lastAccess: now,
+    }
+    await tables.short.put(base.id, next)
+    await this.bumpCounter()
+    return next
+  }
+
+  /** Bump the reference counter of one short-term item (feedback loop). */
+  async bumpShortRefCount(id: string, delta = 1): Promise<ShortTermItemRecord | undefined> {
+    const tables = this.requireTables()
+    const existing = tables.short.get(id)
+    if (existing === undefined) return undefined
+    const next: ShortTermItemRecord = {
+      ...existing,
+      refCount: (existing.refCount ?? 0) + delta,
+      // 被引用是"重要"信号：提权幅度小于重复写入（0.05 vs 0.3），避免互相踩
+      weight: Math.min(2, existing.weight + 0.05 * delta),
+      lastAccess: new Date().toISOString(),
+    }
+    await tables.short.put(id, next)
+    await this.bumpCounter()
+    return next
+  }
+
+  /** Bump the reference counter of one public memory (feedback loop). */
+  async bumpPublicRefCount(memoryId: MemoryId, delta = 1): Promise<PublicMemoryRecord | undefined> {
+    const tables = this.requireTables()
+    const existing = tables.public.get(memoryId)
+    if (existing === undefined) return undefined
+    const next: PublicMemoryRecord = { ...existing, refCount: (existing.refCount ?? 0) + delta }
+    await tables.public.put(memoryId, next)
+    await this.bumpCounter()
+    return next
+  }
+
   // ─── permanent profile (user portrait) ──────────────────────────────────
 
   /** Load the permanent profile for one mode, defaulting to an empty portrait. */
   getPermanent(mode: MemoryMode): PermanentProfileRecord {
     const tables = this.requireTables()
-    return tables.permanent.get(mode) ?? { attributes: {}, preferences: {}, skills: [], relationships: [] }
+    return tables.permanent.get(mode) ?? { attributes: {}, preferences: {}, skills: [], relationships: [], sources: {} }
   }
 
   /** Set one permanent profile field, supporting dotted paths and entity append. */
@@ -228,6 +441,19 @@ export class MemoryStore {
     } else {
       obj[lastKey] = value
     }
+    // v2：记录字段来源与时间戳（覆盖不丢历史；sources 保留最近 2 次旧值链）
+    const nowIso = new Date().toISOString()
+    const sources = (profile.sources ?? {}) as Record<string, unknown>
+    const prev = sources[pathStr]
+    const sourceEntry: Record<string, unknown> = { value, updatedAt: nowIso, source: 'tool' }
+    if (prev !== undefined) {
+      const prevRec = prev as Record<string, unknown>
+      sourceEntry.prev = Array.isArray(prevRec.prev)
+        ? [prevRec, ...(prevRec.prev as unknown[])].slice(0, 2)
+        : [prevRec]
+    }
+    sources[pathStr] = sourceEntry
+    profile.sources = sources
     await tables.permanent.put(mode, profile)
     await this.bumpCounter()
     return profile

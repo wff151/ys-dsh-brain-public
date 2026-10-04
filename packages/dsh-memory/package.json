@@ -19,17 +19,17 @@
     "@deepseek-ai/dsh-tools": "0.1.6-alpha.2"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "link:../../../dsh-monorepo/vendor/cordis",
-    "@deepseek-ai/schemastery": "link:../../../dsh-monorepo/vendor/schemastery",
-    "@deepseek-ai/dsh-agent": "link:../../../dsh-monorepo/packages/core/agent",
-    "@deepseek-ai/dsh-agent-loop": "link:../../../dsh-monorepo/packages/core/agent-loop",
-    "@deepseek-ai/dsh-invariants": "link:../../../dsh-monorepo/packages/runtime-diagnostics/invariants",
-    "@deepseek-ai/dsh-session": "link:../../../dsh-monorepo/packages/core/session",
-    "@deepseek-ai/dsh-session-projection": "link:../../../dsh-monorepo/packages/session/session-projection",
-    "@deepseek-ai/dsh-storage": "link:../../../dsh-monorepo/packages/storage/storage",
-    "@deepseek-ai/dsh-storage-domain": "link:../../../dsh-monorepo/packages/storage/storage-domain",
-    "@deepseek-ai/dsh-storage-json": "link:../../../dsh-monorepo/packages/storage/storage-json",
-    "@deepseek-ai/dsh-system-prompt": "link:../../../dsh-monorepo/packages/core/system-prompt",
-    "@deepseek-ai/dsh-tools": "link:../../../dsh-monorepo/packages/core/tools"
+    "@deepseek-ai/cordis": "link:../../../yuansi-deepseek-harness/vendor/cordis",
+    "@deepseek-ai/schemastery": "link:../../../yuansi-deepseek-harness/vendor/schemastery",
+    "@deepseek-ai/dsh-agent": "link:../../../yuansi-deepseek-harness/packages/core/agent",
+    "@deepseek-ai/dsh-agent-loop": "link:../../../yuansi-deepseek-harness/packages/core/agent-loop",
+    "@deepseek-ai/dsh-invariants": "link:../../../yuansi-deepseek-harness/packages/runtime-diagnostics/invariants",
+    "@deepseek-ai/dsh-session": "link:../../../yuansi-deepseek-harness/packages/core/session",
+    "@deepseek-ai/dsh-session-projection": "link:../../../yuansi-deepseek-harness/packages/session/session-projection",
+    "@deepseek-ai/dsh-storage": "link:../../../yuansi-deepseek-harness/packages/storage/storage",
+    "@deepseek-ai/dsh-storage-domain": "link:../../../yuansi-deepseek-harness/packages/storage/storage-domain",
+    "@deepseek-ai/dsh-storage-json": "link:../../../yuansi-deepseek-harness/packages/storage/storage-json",
+    "@deepseek-ai/dsh-system-prompt": "link:../../../yuansi-deepseek-harness/packages/core/system-prompt",
+    "@deepseek-ai/dsh-tools": "link:../../../yuansi-deepseek-harness/packages/core/tools"
   }
 }

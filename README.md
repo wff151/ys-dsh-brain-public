@@ -37,7 +37,7 @@
 ## 目录导航
 ```
 packages/          参考实现（依赖第三方 @deepseek-ai/dsh，未包含在仓库内）
-├── dsh-memory/            记忆存储（public 事件流 + portable 随身文档）
+├── dsh-memory/            记忆存储（public 事件流 + portable 随身文档；v2 三层短期记忆 / 长期 taskId / 画像来源见 IMPROVE.md）
 ├── dsh-conduct/           提示词编排
 ├── dsh-brain-dispatch/    多 agent 调度（骨架）
 ├── dsh-brain-confinement/ 准入审计
@@ -54,8 +54,103 @@ docs/
 ├── architecture.md        架构设计（从 DESIGN.md 提炼）
 └── methodology.md         方法论复盘（判据纪律 / 预注册 / 清单化）
 ```
+## 安装与使用（packages/dsh-memory）
+
+dsh-memory 是 dsh 0.1.6 生态的 cordis 插件（三层记忆 + 检索三件套 + portable 随身文档）。它依赖 `@deepseek-ai/dsh` 系列的**第三方私有源码**，本仓库不含这些源码，所以不能 clone 后直接 `pnpm install` 就跑。下面是真实可用的安装方式。
+
+### 前提
+
+- Node.js ≥ 22（本仓库实测 v22.23.2）
+- pnpm（实测 11.21.0）
+- dsh 0.1.6 monorepo 源码（含 `vendor/cordis`、`vendor/schemastery`、`packages/storage/*`、`packages/core/*` 等，即 devDependencies 里 `link:` 指向的 `yuansi-deepseek-harness`）
+
+### 目录结构
+
+`packages/dsh-memory/package.json` 里的 devDependencies 用相对 link（`../../../yuansi-deepseek-harness/...`）指向 dsh monorepo，因此两个仓库必须**同级放置**：
+
+```
+<parent>/
+├── yuansi-deepseek-harness/     # dsh 0.1.6 monorepo（第三方源码，自行获取）
+└── dsh-brain-public/            # 本仓库
+    └── packages/dsh-memory/     # 工作区包
+```
+
+### 步骤
+
+```bash
+# 1. 把本仓库放到 dsh monorepo 的兄弟目录（如上结构）
+# 2. 安装（在 dsh-memory 包内，或含 pnpm-workspace.yaml 的工作区根）
+cd dsh-brain-public/packages/dsh-memory
+pnpm install
+
+# 3. 跑测试 / 类型检查
+pnpm test        # 8 套件（含 v2 升级 34 项断言）
+pnpm typecheck
+```
+
+注意：`vector-test.mjs` 需要 embedding 服务（默认 `http://127.0.0.1:8081/health`），离线时该套件自动跳过，不影响其余 7 套件。
+
+### 用法示例
+
+```js
+import { Context } from '@deepseek-ai/cordis'
+import Storage from '@deepseek-ai/dsh-storage'
+import * as StorageJson from '@deepseek-ai/dsh-storage-json'
+import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
+import {
+  MemoryStore,
+  renderShortTermProjection,
+  idempotencyKeyOf,
+} from './src/index.ts'
+
+const ctx = new Context()
+await ctx.plugin(Storage)
+await ctx.plugin(StorageJson, { root: './memdata' })
+await ctx.plugin(StorageDomain, { backend: 'json', routes: {} })
+const store = await MemoryStore.open(ctx)
+
+// 短期：当前状态（kind=state，upsert 覆盖）
+await store.upsertState('daily', { key: 'beans_stock', value: '5 袋', summary: '盘点后存量' })
+
+// 短期：变更事件 + 幂等（kind=event；同幂等键已 success 则第二次 skipped，防重做）
+const { skipped } = await store.appendEvent('daily', {
+  action: 'consume',
+  target: 'beans_stock',
+  idempotencyKey: idempotencyKeyOf('coffee_ops', 'consume', 'beans_stock'),
+  summary: '消耗 1 袋豆',
+})
+
+// 任务上下文（kind=task，同任务 upsert 覆盖）
+await store.updateTaskContext('daily', 'coffee_ops', {
+  goal: '维持咖啡店运营',
+  phase: '日常补货',
+  pending: ['检查牛奶库存', '决定是否补豆'],
+  completed: ['盘点豆库存'],
+  blockedBy: [],
+})
+
+// 模型每轮默认看到的就是投影（当前任务 + 状态 + 最近事件，事实不进投影）
+console.log(renderShortTermProjection(store, 'daily'))
+
+// 长期：带 taskId 的记录（可聚合）
+await store.recordPublicMemory({
+  mode: 'work',
+  title: '支付模块迁移',
+  summary: '阶段一完成，双写校验通过',
+  tags: ['支付'],
+  taskId: 'task_pay_migrate',
+  taskPhase: 'stage1',
+})
+
+// 用户画像：带来源时间戳，覆盖保留旧值链
+await store.setPermanent('daily', 'preferences.喜欢', '本地大模型')
+console.log(store.getPermanent('daily').preferences)
+```
+
+完整导出见 `packages/dsh-memory/src/index.ts`；v2 改进的设计与测试记录见 `packages/dsh-memory/IMPROVE.md`。
+
 ## 声明
-- **第三方依赖未包含**：`packages/*/package.json` 引用了 `@deepseek-ai/dsh` 系列（`link:../../../dsh-monorepo/...`），这些源码**不在本仓库内**，仓库 clone 后不能直接 `pnpm install` 跑通——它是**研究记录 + 参考实现**，不是开箱可用的库。
+- **第三方依赖未包含**：`packages/*/package.json` 引用了 `@deepseek-ai/dsh` 系列（`link:../../../yuansi-deepseek-harness/...`），这些源码**不在本仓库内**——安装方式见上文「安装与使用」。
 - **模型第三方**：Ternary-Bonsai-2-27B 为第三方模型，本仓库不包含权重。
 - **本机环境记录**：所有 trace 均在单机 llama-server 上跑出，脚本内的端口 / 路径 / 超时参数为本机适配值，迁移到其他环境需要调整。
 - **凭证 / 敏感信息已清理**：仓库经多轮敏感词扫描与 git 入库检查，无凭证、无本机绝对路径、无第三方源码。

@@ -35,6 +35,12 @@ export interface PublicMemory {
   unresolved: string[]
   result: string
   source: string
+  /** 关联任务 id（v2 可选）。 */
+  taskId?: string
+  /** 所属任务阶段（v2 可选）。 */
+  taskPhase?: string
+  /** 被检索/被引用计数（反馈回路，v2 可选）。 */
+  refCount?: number
 }
 
 /** One short-term memory item (weighted, decaying). */
@@ -47,6 +53,18 @@ export interface ShortTermItem {
   accessCount: number
   createdAt: string
   lastAccess: string
+  // ── v2 可选字段 ──
+  kind?: 'fact' | 'state' | 'event' | 'task'
+  entityKey?: string
+  entityValue?: string
+  idempotencyKey?: string
+  eventStatus?: 'pending' | 'success' | 'failed'
+  phase?: string
+  summary?: string
+  relatedTask?: string
+  refCount?: number
+  lastEventId?: string
+  ttlHours?: number
 }
 
 /** Permanent user profile (user portrait). */
@@ -55,6 +73,8 @@ export interface PermanentProfile {
   preferences: Record<string, unknown>
   skills: string[]
   relationships: string[]
+  /** v2：字段来源与时间戳，覆盖不丢历史。 */
+  sources?: Record<string, unknown>
 }
 
 /** One portable document (per-session working memory). */
